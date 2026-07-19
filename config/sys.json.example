@@ -1,0 +1,10 @@
+{
+  "VIDEOLOCALPORT": 8043,
+  "LOGFILE": "/var/log/vigiclient.log",
+  "CMDDIFFUSION": [
+    [ "/usr/local/vigiclient/vigi-encode-rdk.sh ", "WIDTH ", "HEIGHT ", "FPS ", "BITRATE" ],
+    [ "/usr/local/vigiclient/vigi-encode-yolo.sh ", "WIDTH ", "HEIGHT ", "FPS ", "BITRATE" ]
+  ],
+  "I2CPCA9685ADDRESS": 64,
+  "I2CPCA9685FREQUENCY": 50
+}

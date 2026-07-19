@@ -1,0 +1,31 @@
+# Credentials Vigibot — never commit
+config/robot.json
+**/robot.json
+!config/robot.json.example
+
+# Local overrides
+*.local
+.env
+.env.*
+
+# SSH keys
+id_rsa
+id_ed25519
+*.pem
+
+# Encoder dumps / logs
+*.h264
+*.264
+*.log
+/tmp/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
