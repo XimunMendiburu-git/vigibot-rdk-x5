@@ -1,27 +1,27 @@
-# Fichiers Vigibot RDK X5
+# Vigibot RDK X5 files
 
-Scripts déployés vers `/usr/local/vigiclient/` par `install/install.sh`.
+Scripts deployed to `/usr/local/vigiclient/` by `install/install.sh`.
 
-| Fichier | Rôle |
-|---------|------|
-| `vigi-encode-rdk.py` / `.sh` | Source vidéo 0 (caméra brute, libx264) |
-| `vigi-encode-yolo.py` / `.sh` | Source vidéo 1 (overlay YOLO BPU) |
-| `rdk-pigpio.js` | API pigpio-like → helper natif, fallback Python |
-| `rdk-gpio-helper.c` | Source du daemon WiringPi C (BCM→BOARD, soft PWM temps réel) |
-| `rdk-gpio-helper` | Binaire compilé sur la RDK par l'installateur |
-| `rdk-gpio-helper.py` | Ancien backend Hobot.GPIO, conservé comme fallback |
-| `rdk-i2c-bus.js` / `rdk-pca9685.js` | Stubs (pas de module I2C sur le robot de test) |
+| File | Purpose |
+|------|---------|
+| `vigi-encode-rdk.py` / `.sh` | Video source 0 (raw camera feed, libx264) |
+| `vigi-encode-yolo.py` / `.sh` | Video source 1 (YOLO BPU overlay) |
+| `rdk-pigpio.js` | pigpio-like API → native helper, with Python fallback |
+| `rdk-gpio-helper.c` | WiringPi C daemon source (BCM→BOARD, real-time software PWM) |
+| `rdk-gpio-helper` | Binary compiled on the RDK by the installer |
+| `rdk-gpio-helper.py` | Legacy Hobot.GPIO backend, retained as a fallback |
+| `rdk-i2c-bus.js` / `rdk-pca9685.js` | Stubs (no I2C module installed on the test robot) |
 
 ## `clientrobotpi.js`
 
-Le client Node Vigibot principal **n'est pas redistribué** dans ce dépôt (binaire propriétaire Vigibot). Il doit déjà être installé par Vigibot dans `/usr/local/vigiclient/`.
+The main Vigibot Node client is **not redistributed** in this repository (it is a proprietary Vigibot binary). It must already have been installed by Vigibot in `/usr/local/vigiclient/`.
 
-Pour rapatrier une version patchée depuis votre carte de référence :
+To fetch a patched version from your reference board:
 
 ```bash
 ./scripts/fetch-from-board.sh
 ```
 
-Cela copie aussi `clientrobotpi.js` (patches latence, etc.) si présent sur la carte.
+This also copies `clientrobotpi.js` (latency patches, etc.) if it is present on the board.
 
-**Ne jamais committer** `robot.json` avec identifiants réels.
+**Never commit** `robot.json` with real credentials.

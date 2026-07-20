@@ -1,14 +1,14 @@
-# Source vidéo 1 — Overlay YOLO (BPU)
+# Video Source 1 — YOLO Overlay (BPU)
 
-## 1. Objectif
+## 1. Objective
 
-Ajouter dans Vigibot une **deuxième source de caméra** diffusant le flux IMX219 avec **détection d'objets YOLO** dessinée en overlay, en réutilisant les modèles précompilés sur la carte RDK X5.
+Add a **second camera source** to Vigibot that streams the IMX219 feed with **YOLO object detection** drawn as an overlay, reusing the precompiled models on the RDK X5 board.
 
-## 2. Intégration Vigibot
+## 2. Vigibot Integration
 
-### Configuration système (`sys.json`)
+### System Configuration (`sys.json`)
 
-Deux entrées dans `CMDDIFFUSION` :
+Two entries in `CMDDIFFUSION`:
 
 ```json
 "CMDDIFFUSION": [
@@ -17,16 +17,16 @@ Deux entrées dans `CMDDIFFUSION` :
 ]
 ```
 
-| Index | Script | Usage Vigibot |
+| Index | Script | Vigibot Usage |
 |-------|--------|---------------|
-| 0 | `vigi-encode-rdk.sh` | Caméra brute (`SOURCE: 0`) |
-| 1 | `vigi-encode-yolo.sh` | Caméra + YOLO (`SOURCE: 1`) |
+| 0 | `vigi-encode-rdk.sh` | Raw camera (`SOURCE: 0`) |
+| 1 | `vigi-encode-yolo.sh` | Camera + YOLO (`SOURCE: 1`) |
 
-**Important** : `"SOURCE": 1` correspond à la **2ᵉ entrée** `CMDDIFFUSION` (index 1). `"SOURCE": 2` imposerait une 3ᵉ entrée.
+**Important**: `"SOURCE": 1` corresponds to the **second `CMDDIFFUSION` entry** (index 1). `"SOURCE": 2` would require a third entry.
 
-### Configuration hardware
+### Hardware Configuration
 
-Deuxième caméra dans la config robot :
+Second camera in the robot configuration:
 
 ```json
 {
@@ -39,13 +39,13 @@ Deuxième caméra dans la config robot :
 }
 ```
 
-### Contrainte CSI
+### CSI Constraint
 
-Une seule caméra CSI physique : les sources 0 et 1 sont **alternatives**. Vigibot coupe la source précédente au changement — comportement acceptable.
+There is only one physical CSI camera: sources 0 and 1 are **mutually exclusive**. Vigibot stops the previous source when switching, which is acceptable behavior.
 
 ---
 
-## 3. Architecture logicielle
+## 3. Software Architecture
 
 ```mermaid
 flowchart TB
@@ -65,73 +65,73 @@ flowchart TB
   Cam -.->|"30 frames passthrough"| X264
 ```
 
-### Composants
+### Components
 
-| Étape | Technologie |
+| Stage | Technology |
 |-------|-------------|
 | Capture | `hobot_vio.libsrcampy.Camera`, `get_img(2, 640, 480)` |
-| Inférence | `hobot_dnn.pyeasy_dnn`, modèle NV12 |
-| Post-traitement | `libpostprocess.so` via ctypes (`Yolov5doProcess`, `Yolov5PostProcess`) |
+| Inference | `hobot_dnn.pyeasy_dnn`, NV12 model |
+| Post-processing | `libpostprocess.so` via ctypes (`Yolov5doProcess`, `Yolov5PostProcess`) |
 | Overlay | OpenCV `rectangle`, `putText` |
-| Encodage | Même pipeline libx264 que source 0 |
-| Sortie | TCP 8043 → Node |
+| Encoding | Same libx264 pipeline as source 0 |
+| Output | TCP 8043 → Node |
 
-### Modèle utilisé
+### Model Used
 
 ```
 /opt/hobot/model/x5/basic/yolov5s_v7_640x640_nv12.bin
 ```
 
-Sample de référence validé :
+Validated reference sample:
 
 ```
 /app/pydev_demo/12_yolov5s_v6_v7_sample/test_yolov5s_v7.py
 ```
 
-Validation offline : détections person/kite OK sur `kite.jpg`. Warning version HBRT 3.15.55 vs modèle 3.15.47 — toléré.
+Offline validation: person/kite detections work on `kite.jpg`. HBRT version 3.15.55 vs. model version 3.15.47 warning — tolerated.
 
-### Paramètres post-traitement
+### Post-processing Parameters
 
-| Paramètre | Valeur |
+| Parameter | Value |
 |-----------|--------|
 | `score_threshold` | 0.4 |
 | `nms_threshold` | 0.45 |
 | `nms_top_k` | 20 |
 | `is_pad_resize` | 0 |
-| Offset JSON | `result_str[16:]` (comme le sample officiel) |
+| JSON offset | `result_str[16:]` (as in the official sample) |
 
 ---
 
-## 4. Stratégie stream-first
+## 4. Stream-first Strategy
 
-### Problème : écran noir au démarrage
+### Problem: Black Screen at Startup
 
-**Symptôme** : process YOLO lancé, modèle chargé, TCP 8043 connecté, mais **aucune frame** envoyée (`sent … yolo frames` absent dans les logs).
+**Symptom**: the YOLO process starts, the model loads, and TCP 8043 connects, but **no frames** are sent (`sent … yolo frames` is absent from the logs).
 
-**Cause racine** : blocage sur la **1ʳᵉ inférence BPU** ou le chargement modèle **avant** tout envoi de données → le lecteur Vigibot ne reçoit rien.
+**Root cause**: the **first BPU inference** or model loading blocks **before** any data is sent → the Vigibot player receives nothing.
 
-### Solution retenue
+### Selected Solution
 
-1. **Passthrough** : envoyer les 30 premières frames NV12 **brutes** (sans YOLO)
-2. **Connexion TCP** et démarrage ffmpeg **avant** chargement modèle
-3. **Chargement modèle** après amorçage du flux
-4. Bascule overlay YOLO avec `INFER_EVERY = 2 ou 3` (inférence 1 frame sur N)
-5. **Filet de sécurité** : en cas d'exception dans la boucle YOLO, renvoyer la frame brute
+1. **Passthrough**: send the first 30 **raw** NV12 frames (without YOLO)
+2. Establish the **TCP connection** and start ffmpeg **before** loading the model
+3. **Load the model** after the stream has started
+4. Enable the YOLO overlay with `INFER_EVERY = 2 or 3` (infer one frame out of every N)
+5. **Safety fallback**: if an exception occurs in the YOLO loop, send the raw frame
 
-### Conséquences
+### Consequences
 
 | Aspect | Impact |
 |--------|--------|
-| Démarrage | ~2 s sans boîtes, puis overlay |
-| Détection | Positions rafraîchies tous les N frames, léger retard sur objets rapides |
-| CPU | Double conversion NV12↔BGR par frame en mode overlay |
-| Robustesse | Meilleure reprise après erreur inférence |
+| Startup | ~2 s without boxes, then the overlay appears |
+| Detection | Positions update every N frames, with slight lag on fast-moving objects |
+| CPU | Two NV12↔BGR conversions per frame in overlay mode |
+| Robustness | Better recovery after inference errors |
 
 ---
 
-## 5. Problème CSI au switch de source
+## 5. CSI Issue When Switching Sources
 
-### Symptôme
+### Symptom
 
 ```
 Mipi csi0 has been used
@@ -141,7 +141,7 @@ camera.open_cam failed
 
 ### Cause
 
-L'ancien encodeur (`vigi-encode-rdk.py` ou `vigi-encode-yolo.py`) n'a pas libéré la CSI avant le lancement du nouveau process Diffusion.
+The previous encoder (`vigi-encode-rdk.py` or `vigi-encode-yolo.py`) did not release the CSI interface before the new Diffusion process started.
 
 ### Workaround
 
@@ -151,21 +151,21 @@ sleep 2
 systemctl restart vigiclient
 ```
 
-Attendre 2–3 s après un switch raté avant de relancer.
+Wait 2–3 seconds after a failed switch before trying again.
 
-### Conséquence
+### Consequence
 
-Procédure de changement de source **fragile** — à industrialiser (supervision process, délai garanti, cleanup signal handler).
+The source-switching procedure is **fragile** and needs to be productionized (process supervision, guaranteed delay, cleanup signal handler).
 
 ---
 
-## 6. Paramètres runtime
+## 6. Runtime Parameters
 
-| Paramètre | Valeur |
+| Parameter | Value |
 |-----------|--------|
-| Résolution capture | 640×480 |
-| Résolution modèle | 640×640 |
-| FPS | 15 (plafonné) |
+| Capture resolution | 640×480 |
+| Model resolution | 640×640 |
+| FPS | 15 (capped) |
 | Bitrate | ~700 kbps |
 | `PASSTHROUGH_FRAMES` | 30 |
 | `INFER_EVERY` | 2–3 |
@@ -173,20 +173,20 @@ Procédure de changement de source **fragile** — à industrialiser (supervisio
 
 ---
 
-## 7. Fichiers
+## 7. Files
 
-| Chemin | Rôle |
+| Path | Role |
 |--------|------|
-| `/usr/local/vigiclient/vigi-encode-yolo.py` | Encodeur YOLO (~416 lignes) |
-| `/usr/local/vigiclient/vigi-encode-yolo.sh` | Wrapper shell |
-| `/usr/local/vigiclient/vigi-encode-yolo.py.rdkcopy` | Backup copie encodeur rdk |
+| `/usr/local/vigiclient/vigi-encode-yolo.py` | YOLO encoder (~416 lines) |
+| `/usr/local/vigiclient/vigi-encode-yolo.sh` | Shell wrapper |
+| `/usr/local/vigiclient/vigi-encode-yolo.py.rdkcopy` | Backup copy of the RDK encoder |
 
 ---
 
-## 8. Pistes d'amélioration
+## 8. Future Improvements
 
-- Pipeline multi-thread : capture / inférence / encode en files séparées
-- Aligner versions OpenExplorer (compilation modèle vs HBRT runtime)
-- Réduire conversions NV12↔BGR (overlay direct NV12 si possible)
-- Déploiement versionné (git/scp) au lieu de heredocs SSH
-- Documenter offset `result_str[16:]` et structure tensors dans un guide modèle
+- Multithreaded pipeline: separate capture / inference / encoding queues
+- Align OpenExplorer versions (model compilation vs. HBRT runtime)
+- Reduce NV12↔BGR conversions (direct NV12 overlay if possible)
+- Versioned deployment (git/scp) instead of SSH heredocs
+- Document the `result_str[16:]` offset and tensor structure in a model guide

@@ -1,59 +1,60 @@
-# Documentation POC — Vigibot sur RDK X5
+# POC Documentation — Vigibot on RDK X5
 
-Documentation du proof-of-concept d'intégration d'un robot **RDK X5** (D-Robotics) avec la stack **Vigibot**, initialement conçue pour Raspberry Pi.
+Documentation for the proof of concept integrating an **RDK X5** robot (D-Robotics) with the **Vigibot** stack, which was originally designed for Raspberry Pi.
 
 ## Index
 
-| Document | Contenu |
+| Document | Content |
 |----------|---------|
-| [poc-vigibot-rdk-x5.md](./poc-vigibot-rdk-x5.md) | Rapport POC complet (synthèse, architecture, tableau récap) |
-| [video-encoding.md](./video-encoding.md) | Encodage H.264 : tentatives HW, solution SW libx264 |
-| [yolo-source.md](./yolo-source.md) | 2ᵉ source vidéo avec overlay YOLO (BPU) |
+| [poc-vigibot-rdk-x5.md](./poc-vigibot-rdk-x5.md) | Full POC report (summary, architecture, overview table) |
+| [video-encoding.md](./video-encoding.md) | H.264 encoding: hardware attempts, libx264 software solution |
+| [yolo-source.md](./yolo-source.md) | Second video source with YOLO overlay (BPU) |
 | [gpio-mapping.md](./gpio-mapping.md) | GPIO, PWM, servos, mapping BCM→BOARD |
-| [known-issues.md](./known-issues.md) | Problèmes connus, workarounds, runbook |
+| [known-issues.md](./known-issues.md) | Known issues, workarounds, and runbook |
 
-## Plateforme cible
+## Target platform
 
-| Élément | Détail |
+| Component | Details |
 |---------|--------|
-| Carte | RDK X5 (aarch64, Ubuntu 22.04.5 LTS, kernel 6.1.83) |
-| Caméra | IMX219 (CSI, mipi rx csi0) |
-| Client Vigibot | `/usr/local/vigiclient/` (`clientrobotpi.js`, Node.js) |
-| Config hardware | Identique à la config officielle Raspberry Pi (numéros BCM) |
-| Runtime IA | BPU, `hobot_dnn.pyeasy_dnn`, `libpostprocess.so` |
+| Board | RDK X5 (aarch64, Ubuntu 22.04.5 LTS, kernel 6.1.83) |
+| Camera | IMX219 (CSI, mipi rx csi0) |
+| Vigibot client | `/usr/local/vigiclient/` (`clientrobotpi.js`, Node.js) |
+| Hardware configuration | Identical to the official Raspberry Pi configuration (BCM numbers) |
+| AI runtime | BPU, `hobot_dnn.pyeasy_dnn`, `libpostprocess.so` |
 
-## Chemins clés sur la carte
+## Key paths on the board
 
 ```
 /usr/local/vigiclient/
-├── clientrobotpi.js          # Client principal Vigibot
-├── sys.json                  # Ports, CMDDIFFUSION, adresses I2C
-├── robot.json                # Config hardware (souvent poussée par le serveur)
-├── vigi-encode-rdk.sh/.py    # Encodeur vidéo source 0
-├── vigi-encode-yolo.sh/.py   # Encodeur vidéo source 1 (YOLO)
-├── rdk-pigpio.js             # Wrapper GPIO (helper natif, fallback Python)
-├── rdk-gpio-helper.c         # Daemon WiringPi C (BCM→BOARD, PWM, servo)
-├── rdk-gpio-helper.py        # Ancien daemon Hobot.GPIO de secours
-├── rdk-i2c-bus.js            # Stub I2C (no-op à l'origine)
-└── rdk-pca9685.js            # Stub PCA (no-op à l'origine)
+├── clientrobotpi.js          # Main Vigibot client
+├── sys.json                  # Ports, CMDDIFFUSION, I2C addresses
+├── robot.json                # Hardware configuration (often pushed by the server)
+├── vigi-encode-rdk.sh/.py    # Video source 0 encoder
+├── vigi-encode-yolo.sh/.py   # Video source 1 encoder (YOLO)
+├── rdk-pigpio.js             # GPIO wrapper (native helper, Python fallback)
+├── rdk-gpio-helper.c         # WiringPi C daemon (BCM→BOARD, PWM, servo)
+├── rdk-gpio-helper.py        # Legacy fallback Hobot.GPIO daemon
+├── rdk-i2c-bus.js            # I2C stub (originally a no-op)
+└── rdk-pca9685.js            # PCA stub (originally a no-op)
 ```
 
-## État du POC (résumé)
+## POC status (summary)
 
-| Volet | État | Solution retenue |
+| Area | Status | Selected solution |
 |-------|------|------------------|
-| Vidéo source 0 (H.264) | OK | libx264 software (ffmpeg) |
-| Vidéo source 1 (YOLO) | OK | Pipeline Python + BPU, stream-first |
-| Moteurs DC | OK | Soft PWM WiringPi C 250 Hz + deadzone ±15 |
+| Video source 0 (H.264) | OK | Software libx264 (ffmpeg) |
+| Video source 1 (YOLO) | OK | Python + BPU pipeline, stream-first |
+| DC motors | OK | WiringPi C soft PWM at 250 Hz + ±15 dead zone |
 | Buzzer | OK | Soft PWM via bridge WiringPi C |
-| Servos | En validation | Soft PWM C temps réel à 50 Hz |
-| Encodeur H.264 matériel | Abandonné | Incompatible décodeur navigateur |
-| PCA9685 | Non disponible | Pas de module physique sur le robot |
-| PWM hardware X5 (servos) | À faire | 8 canaux, 50 Hz via `srpi-config` |
+| Servos | Under validation | Real-time C soft PWM at 50 Hz |
+| IR illuminators | Under validation | WiringPi on BOARD21; kernel GPIO357 on BOARD33 |
+| Hardware H.264 encoder | Abandoned | Incompatible with browser decoder |
+| PCA9685 | Unavailable | No physical module on the robot |
+| X5 hardware PWM (servos) | Experimental | Custom PWM0/PWM1 overlay disabled Wi-Fi |
 
-## Dépôt source
+## Source repository
 
-Ce dossier fait partie du dépôt **vigibot-rdk-x5** (dépôt GitHub dédié à l'intégration Vigibot sur RDK X5).
+This directory is part of the **vigibot-rdk-x5** repository (the GitHub repository dedicated to integrating Vigibot on RDK X5).
 
-- **README principal** : [../README.md](../README.md) (installation, architecture, exploitation)
-- **SDK Hobot** (caméra, BPU) : dépôt séparé [x5-hobot-spdev](https://github.com/horizon/x5-hobot-spdev)
+- **Main README**: [../README.md](../README.md) (installation, architecture, and operation)
+- **Hobot SDK** (camera, BPU): separate [x5-hobot-spdev](https://github.com/D-Robotics/x5-hobot-spdev) repository

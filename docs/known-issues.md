@@ -1,22 +1,22 @@
-# Problèmes connus et runbook
+# Known issues and runbook
 
-Guide opérationnel pour le robot RDK X5 sous Vigibot. Complète le [rapport POC](./poc-vigibot-rdk-x5.md).
+Operational guide for the RDK X5 robot running Vigibot. Supplements the [POC report](./poc-vigibot-rdk-x5.md).
 
 ---
 
-## 1. Vidéo noire après changement de source (0 ↔ 1)
+## 1. Black video after switching sources (0 ↔ 1)
 
-### Symptômes
+### Symptoms
 
-- Écran noir sur Vigibot
+- Black screen in Vigibot
 - Logs : `Mipi csi0 has been used`, `camera.open_cam failed`
-- Ancien encodeur parfois encore actif (`sent … nv12 frames` dans le log)
+- Previous encoder sometimes still active (`sent … nv12 frames` in the log)
 
 ### Cause
 
-La CSI n'est pas libérée avant le lancement du nouvel encodeur.
+CSI is not released before the new encoder starts.
 
-### Procédure
+### Procedure
 
 ```bash
 kill -9 $(pgrep -f vigi-encode) 2>/dev/null
@@ -26,70 +26,70 @@ sleep 5
 grep -E 'open_cam|connected|sent |camera ready' /var/log/vigiclient.log | tail -20
 ```
 
-**Attention** : éviter `pkill -f vigi-encode` sans précision — peut matcher la ligne de commande du shell et produire des `Killed` inattendus. Préférer `pgrep -f 'vigi-encode-yolo|vigi-encode-rdk'`.
+**Warning**: avoid using `pkill -f vigi-encode` without a more specific pattern—it may match the shell command line and produce unexpected `Killed` messages. Prefer `pgrep -f 'vigi-encode-yolo|vigi-encode-rdk'`.
 
-### Prévention
+### Prevention
 
-- Attendre 2–3 s entre deux switches de source sur Vigibot
-- Ne pas sauver la config hardware pendant que la vidéo tourne sans laisser le temps au restart
+- Wait 2–3 seconds between source switches in Vigibot
+- Do not save the hardware configuration while video is running without allowing time for the restart
 
 ---
 
-## 2. Fausse alarme de latence gigantesque
+## 2. False extreme-latency alarm
 
-### Symptômes
+### Symptoms
 
 ```
 1784300838532 ms latency, stopping of motors and streams
 ```
 
-Puis retour à ~300 ms. Failsafe moteurs déclenché.
+It then returns to ~300 ms. The motor failsafe is triggered.
 
 ### Cause
 
-Dans `clientrobotpi.js` (~ligne 668) :
+In `clientrobotpi.js` (around line 668):
 
 ```javascript
 lastTimestamp = data.boucleVideoCommande;
 ```
 
-Quand le serveur envoie `boucleVideoCommande = 0`, le calcul devient `Date.now() - 0 ≈ 1.7e12 ms`.
+When the server sends `boucleVideoCommande = 0`, the calculation becomes `Date.now() - 0 ≈ 1.7e12 ms`.
 
-### Contournements appliqués
+### Applied workarounds
 
-1. Garde : n'assigner que si `boucleVideoCommande > 1e12`
-2. Neutralisation condition `LATENCYALARMBEGIN` (`false &&`)
-3. Seuils relevés : END 60000 / BEGIN 120000 ms
-4. Clear vidéo alarme déjà commenté
+1. Guard: assign only if `boucleVideoCommande > 1e12`
+2. Disable the `LATENCYALARMBEGIN` condition (`false &&`)
+3. Increase thresholds: END 60000 / BEGIN 120000 ms
+4. Video alarm clear already commented out
 
-### Conséquence
+### Implication
 
-Protection latence réelle **affaiblie ou désactivée**. À ré-implémenter proprement (timestamp initialisé, validation plage, failsafe graduel).
+Actual latency protection is **weakened or disabled**. It should be reimplemented correctly (initialized timestamp, range validation, gradual failsafe).
 
 ---
 
-## 3. Robot absent sur Vigibot après reboot
+## 3. Robot missing from Vigibot after reboot
 
-### Symptômes
+### Symptoms
 
-SSH OK mais robot invisible sur le site.
+SSH works, but the robot is not visible on the website.
 
-### Causes fréquentes
+### Common causes
 
-- Service `vigiclient` non enabled au boot
-- Changement réseau Wi-Fi (déconnexion temporaire)
-- Client pas reconnecté au serveur
+- `vigiclient` service not enabled at boot
+- Wi-Fi network change (temporary disconnection)
+- Client did not reconnect to the server
 
-### Procédure
+### Procedure
 
 ```bash
-systemctl is-enabled vigiclient    # doit afficher: enabled
+systemctl is-enabled vigiclient    # should display: enabled
 systemctl status vigiclient
 grep 'Connected to https://www.vigibot.com' /var/log/vigiclient.log | tail -5
 ping -c 2 www.vigibot.com
 ```
 
-Activer au boot si nécessaire :
+Enable at boot if necessary:
 
 ```bash
 systemctl enable vigiclient
@@ -98,74 +98,74 @@ systemctl start vigiclient
 
 ---
 
-## 4. Moteurs qui tournent au neutre (stick centré)
+## 4. Motors turn while controls are neutral (stick centered)
 
-### Symptômes
+### Symptoms
 
-Roues avancent légèrement au repos ; s'arrêtent en commandant un léger recul.
+The wheels move slightly forward at rest and stop when a small reverse command is applied.
 
 ### Causes
 
-- Deadzone Vigibot trop étroite (`INS: [-100, -1, 1, 100]`)
-- Offset / trim des sticks télécommande
-- `pwmWrite` stub (avant implémentation bridge)
+- Vigibot dead zone too narrow (`INS: [-100, -1, 1, 100]`)
+- Remote-control stick offset / trim
+- `pwmWrite` stub (before bridge implementation)
 
 ### Solution
 
-Dans la config hardware Vigibot, par roue `PwmPwm` :
+In the Vigibot hardware configuration, for each `PwmPwm` wheel:
 
 ```json
 "INS": [-100, -15, 15, 100],
 "OUTS": [-100, 0, 0, 100]
 ```
 
-Vérifier trim sticks à 0 sur la télécommande Vigibot.
+Check that stick trim is set to 0 on the Vigibot remote control.
 
 ---
 
-## 5. Servos qui tremblent au repos
+## 5. Servos jitter at rest
 
-### Symptômes
+### Symptoms
 
-Maintien instable, vibration audible/visible au repos.
+Unstable position holding, with audible/visible vibration at rest.
 
 ### Cause
 
-Ancien backend Python : soft PWM userspace non temps-réel.
+Legacy Python backend: non-real-time userspace soft PWM.
 
 ### Options
 
 | Option | Action |
 |--------|--------|
-| Accepter | Vivre avec pour téléop basique |
-| Couper au repos | Pulse 0 (Floating) — plus de tremblement, pas de couple de maintien |
-| **Actuel** | Helper WiringPi C avec threads `SCHED_FIFO`, validation en cours |
-| Long terme | Ajouter module PCA9685 (I2C) |
+| Accept | Tolerate it for basic teleoperation |
+| Disable at rest | Pulse 0 (floating)—no jitter, but no holding torque |
+| **Current** | WiringPi C helper with `SCHED_FIFO` threads, validation in progress |
+| Long term | Add a PCA9685 module (I2C) |
 
-Ne pas activer PWM0/PWM1 avec un overlay personnalisé : ce test a désactivé le Wi-Fi du robot de référence. Voir [gpio-mapping.md](./gpio-mapping.md).
+Do not enable PWM0/PWM1 with a custom overlay: this test disabled Wi-Fi on the reference robot. See [gpio-mapping.md](./gpio-mapping.md).
 
 ---
 
-## 6. Déploiement scripts via SSH
+## 6. Deploying scripts over SSH
 
-### Problème : collage cassé
+### Issue: broken paste
 
-Symptôme : `[200~`, `^[[201~`, heredoc tronqué, fichier Python incomplet.
+Symptom: `[200~`, `^[[201~`, truncated heredoc, incomplete Python file.
 
 ### Solutions
 
 ```bash
-# Désactiver bracketed paste avant gros collage
+# Disable bracketed paste before pasting a large block
 bind 'set enable-bracketed-paste off'
 ```
 
-Préférer transfert depuis PC :
+Prefer transferring from the PC:
 
 ```powershell
 scp vigi-encode-yolo.py sunrise@10.146.245.115:/tmp/
 ```
 
-Puis sur la carte :
+Then, on the board:
 
 ```bash
 cp /tmp/vigi-encode-yolo.py /usr/local/vigiclient/
@@ -175,9 +175,9 @@ wc -l /usr/local/vigiclient/vigi-encode-yolo.py
 
 ---
 
-## 7. Commandes diagnostic rapides
+## 7. Quick diagnostic commands
 
-### Service et processus
+### Service and processes
 
 ```bash
 systemctl status vigiclient --no-pager
@@ -192,15 +192,15 @@ sudo journalctl -u vigiclient -n 80 --no-pager
 sudo journalctl -u vigiclient -f | grep --line-buffered 'VIDEO NAL'
 ```
 
-Note : les logs encodeur Python vont souvent sur stderr → visibles dans journald, pas toujours dans `vigiclient.log`.
+Note: Python encoder logs often go to stderr → visible in journald, but not always in `vigiclient.log`.
 
-### Vidéo TCP
+### TCP video
 
 ```bash
 sudo ss -tpn | grep 8043
 ```
 
-Attendu : Node en LISTEN + connexion depuis le process encodeur.
+Expected: Node in LISTEN state + connection from the encoder process.
 
 ### GPIO helper
 
@@ -209,7 +209,7 @@ pgrep -af rdk-gpio-helper
 grep -n 'servoWrite\|pwmWrite' /usr/local/vigiclient/rdk-pigpio.js
 ```
 
-### I2C (si PCA ajouté plus tard)
+### I2C (if PCA is added later)
 
 ```bash
 ls -l /dev/i2c-*
@@ -218,30 +218,30 @@ for b in 0 2 3 4 5 6 7 8; do echo "=== bus $b ==="; i2cdetect -y -r $b 2>/dev/nu
 
 ---
 
-## 8. Issues ouverts (post-POC)
+## 8. Open issues (post-POC)
 
-| Issue | Priorité | Piste |
+| Issue | Priority | Approach |
 |-------|----------|-------|
-| Encodeur HW incompatible navigateur | Moyenne | Analyse slices NAL, WebCodecs |
-| Servos tremblent au repos | Haute | PWM HW X5 ou PCA9685 |
-| Overlay PWM0/PWM1 coupe le Wi-Fi | Critique | Ne pas déployer ; analyser le pinmux hors production |
-| Switch source CSI fragile | Moyenne | Cleanup garanti, watchdog encodeur |
-| Failsafe latence neutralisé | Haute | Ré-implémenter garde timestamp |
-| Stubs I2C/PCA | Basse | Si hardware ajouté |
-| Scripts non versionnés | Moyenne | Dépôt dédié + CI déploiement |
-| IR / switches non validés | Basse | Tests bouton Vigibot |
-| Warning HBRT vs modèle YOLO | Basse | Aligner OpenExplorer |
+| Hardware encoder incompatible with browser | Medium | Analyze NAL slices, WebCodecs |
+| Servos jitter at rest | High | X5 hardware PWM or PCA9685 |
+| PWM0/PWM1 overlay disables Wi-Fi | Critical | Do not deploy; analyze pinmux outside production |
+| Fragile CSI source switching | Medium | Guaranteed cleanup, encoder watchdog |
+| Latency failsafe disabled | High | Reimplement timestamp guard |
+| I2C/PCA stubs | Low | If hardware is added |
+| Unversioned scripts | Medium | Dedicated repository + deployment CI |
+| IR / switches not validated | Low | Vigibot button tests |
+| HBRT vs. YOLO model warning | Low | Align OpenExplorer |
 
 ---
 
-## 9. Contacts et chemins utiles
+## 9. Useful contacts and paths
 
-| Ressource | Chemin / URL |
+| Resource | Path / URL |
 |-----------|--------------|
 | Client Vigibot | `/usr/local/vigiclient/` |
-| Log principal | `/var/log/vigiclient.log` |
+| Main log | `/var/log/vigiclient.log` |
 | Service systemd | `/etc/systemd/system/vigiclient.service` |
-| Drop-in encode | `/etc/systemd/system/vigiclient.service.d/encode.conf` |
+| Encoder drop-in | `/etc/systemd/system/vigiclient.service.d/encode.conf` |
 | Samples 40-pin | `/app/40pin_samples/` |
-| Modèles BPU | `/opt/hobot/model/x5/basic/` |
-| Doc POC | `docs/` (repo vigibot-rdk-x5) |
+| BPU models | `/opt/hobot/model/x5/basic/` |
+| POC documentation | `docs/` (vigibot-rdk-x5 repository) |
