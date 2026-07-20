@@ -4,7 +4,7 @@
 set -euo pipefail
 
 BOARD_USER="${BOARD_USER:-sunrise}"
-BOARD_HOST="${BOARD_HOST:-10.146.245.115}"
+BOARD_HOST="${BOARD_HOST:-10.59.161.115}"
 REMOTE="${REMOTE:-/usr/local/vigiclient}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCAL_VIGI="${REPO_ROOT}/vigiclient"

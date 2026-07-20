@@ -1,12 +1,9 @@
 "use strict";
-
-// Stub PCA9685 driver — no physical module on test robot.
-
-function Pca9685Driver() {}
-
-Pca9685Driver.prototype.setPulseLength = function () {};
-Pca9685Driver.prototype.setPWMFreq = function () {};
-Pca9685Driver.prototype.setPWM = function () {};
-Pca9685Driver.prototype.setAllPWM = function () {};
-
-module.exports = Pca9685Driver;
+function Pca9685Driver(_options, callback) {
+  if (callback) callback(null);
+}
+Pca9685Driver.prototype.channelOn = function channelOn() {};
+Pca9685Driver.prototype.channelOff = function channelOff() {};
+Pca9685Driver.prototype.setPulseLength = function setPulseLength() {};
+Pca9685Driver.prototype.setDutyCycle = function setDutyCycle() {};
+module.exports = { Pca9685Driver: Pca9685Driver };

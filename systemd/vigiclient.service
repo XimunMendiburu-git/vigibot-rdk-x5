@@ -8,9 +8,11 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/usr/local/vigiclient
+Environment=VIGI_USE_FFMPEG=1
+Environment=LD_LIBRARY_PATH=/usr/hobot/lib:/usr/lib
 ExecStart=/usr/bin/node /usr/local/vigiclient/clientrobotpi.js
 Restart=always
-RestartSec=5
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target

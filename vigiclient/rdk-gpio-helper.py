@@ -1,187 +1,178 @@
 #!/usr/bin/env python3
-"""
-GPIO bridge daemon for Vigibot on RDK X5.
-
-Reads line commands on stdin:
-  out <bcm> <0|1>
-  pwm <bcm> <0-255>
-  servo <bcm> <pulse_us>
-
-BCM pin numbers match official Vigibot Raspberry Pi hardware config;
-translated to BOARD numbering for Hobot.GPIO.
-"""
-
-from __future__ import annotations
-
-import os
 import sys
 import threading
 import time
-
 import Hobot.GPIO as GPIO
 
-# Official Vigibot Pi config (BCM) → RDK X5 BOARD header pins
 BCM_TO_BOARD = {
-    1: 28,
-    4: 7,
-    5: 29,
-    6: 31,
-    7: 26,
-    8: 24,
-    9: 21,
-    13: 33,
-    16: 36,
-    17: 11,
-    18: 12,
-    19: 35,
-    20: 38,
-    21: 40,
-    22: 15,
-    23: 16,
-    24: 18,
-    25: 22,
-    26: 37,
-    27: 13,
+    1: 28, 4: 7, 5: 29, 6: 31, 7: 26, 8: 24, 9: 21,
+    13: 33, 16: 36, 17: 11, 18: 12, 19: 35, 20: 38, 21: 40,
+    22: 15, 23: 16, 24: 18, 25: 22, 26: 37, 27: 13,
 }
 
-MOTOR_PWM_HZ = 250
-SERVO_PWM_HZ = 50
-SERVO_HYSTERESIS_US = 25
-SERVO_QUANTUM_US = 20
+PWM_FREQ = 250
+SERVO_FREQ = 50
+SERVO_HYST_US = 40
+SERVO_QUANTUM_US = 20  # arrondi → moins de micro-variations
 
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BOARD)
-
-configured: set[int] = set()
-pwm_threads: dict[int, threading.Thread] = {}
-pwm_state: dict[int, dict] = {}
-servo_lock = threading.Lock()
-servo_targets: dict[int, int] = {}
-servo_thread: threading.Thread | None = None
-servo_stop = False
+setup = set()
+pwm_channels = {}
+servo_pulses = {}
+lock = threading.Lock()
 
 
-def board_pin(bcm: int) -> int:
-    if bcm not in BCM_TO_BOARD:
-        raise ValueError(f"unknown BCM pin {bcm}")
-    return BCM_TO_BOARD[bcm]
+class SoftPwm:
+    def __init__(self, pin, freq):
+        self.pin = pin
+        self.freq = freq
+        self.duty = 0
+        self._stop = False
+        self._th = threading.Thread(target=self._run, name="spwm-%d" % pin, daemon=True)
+        self._th.start()
 
+    def set_duty(self, duty):
+        self.duty = max(0, min(255, int(duty)))
 
-def ensure_output(pin: int) -> None:
-    if pin not in configured:
-        GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
-        configured.add(pin)
-
-
-def soft_pwm_loop(pin: int, hz: int) -> None:
-    period = 1.0 / hz
-    while True:
-        st = pwm_state.get(pin)
-        if not st or st.get("stop"):
-            break
-        duty = max(0, min(255, int(st.get("duty", 0))))
-        if duty <= 0:
-            GPIO.output(pin, GPIO.LOW)
-            time.sleep(period)
-            continue
-        if duty >= 255:
-            GPIO.output(pin, GPIO.HIGH)
-            time.sleep(period)
-            continue
-        high = period * (duty / 255.0)
-        low = period - high
-        GPIO.output(pin, GPIO.HIGH)
-        time.sleep(high)
-        GPIO.output(pin, GPIO.LOW)
-        time.sleep(low)
-
-
-def set_pwm(bcm: int, duty: int) -> None:
-    pin = board_pin(bcm)
-    ensure_output(pin)
-    st = pwm_state.setdefault(pin, {"duty": 0, "stop": False, "hz": MOTOR_PWM_HZ})
-    st["duty"] = max(0, min(255, duty))
-    st["hz"] = MOTOR_PWM_HZ
-    if pin not in pwm_threads or not pwm_threads[pin].is_alive():
-        t = threading.Thread(target=soft_pwm_loop, args=(pin, MOTOR_PWM_HZ), daemon=True)
-        pwm_threads[pin] = t
-        t.start()
-
-
-def servo_engine() -> None:
-    period = 1.0 / SERVO_PWM_HZ
-    while not servo_stop:
-        with servo_lock:
-            items = list(servo_targets.items())
-        if not items:
-            time.sleep(0.01)
-            continue
-        cycle_start = time.perf_counter()
-        for pin, pulse_us in items:
-            pulse_us = max(500, min(2500, pulse_us))
-            high = pulse_us / 1_000_000.0
-            GPIO.output(pin, GPIO.HIGH)
-            time.sleep(high)
-            GPIO.output(pin, GPIO.LOW)
-        elapsed = time.perf_counter() - cycle_start
-        rest = period - elapsed
-        if rest > 0:
-            time.sleep(rest)
-
-
-def start_servo_engine() -> None:
-    global servo_thread
-    if servo_thread and servo_thread.is_alive():
-        return
-    t = threading.Thread(target=servo_engine, daemon=True)
-    servo_thread = t
-    t.start()
-
-
-def set_servo(bcm: int, pulse_us: int) -> None:
-    pin = board_pin(bcm)
-    ensure_output(pin)
-    pulse_us = max(500, min(2500, int(pulse_us)))
-    prev = servo_targets.get(pin)
-    if prev is not None:
-        if abs(prev - pulse_us) < SERVO_HYSTERESIS_US:
-            return
-        pulse_us = ((pulse_us + SERVO_QUANTUM_US // 2) // SERVO_QUANTUM_US) * SERVO_QUANTUM_US
-    with servo_lock:
-        servo_targets[pin] = pulse_us
-    start_servo_engine()
-
-
-def handle_line(line: str) -> None:
-    parts = line.strip().split()
-    if len(parts) < 2:
-        return
-    cmd = parts[0].lower()
-    bcm = int(parts[1])
-    if cmd == "out":
-        val = int(parts[2])
-        pin = board_pin(bcm)
-        ensure_output(pin)
-        GPIO.output(pin, GPIO.HIGH if val else GPIO.LOW)
-    elif cmd == "pwm":
-        set_pwm(bcm, int(parts[2]))
-    elif cmd == "servo":
-        set_servo(bcm, int(parts[2]))
-
-
-def main() -> None:
-    try:
-        os.nice(-5)
-    except OSError:
-        pass
-    for line in sys.stdin:
-        if not line:
-            break
+    def stop(self):
+        self._stop = True
+        self.duty = 0
         try:
-            handle_line(line)
-        except Exception as exc:
-            print(f"err: {exc}", file=sys.stderr, flush=True)
+            GPIO.output(self.pin, GPIO.LOW)
+        except Exception:
+            pass
+
+    def _run(self):
+        period = 1.0 / float(self.freq)
+        while not self._stop:
+            d = self.duty
+            if d <= 0:
+                GPIO.output(self.pin, GPIO.LOW)
+                time.sleep(period)
+            elif d >= 255:
+                GPIO.output(self.pin, GPIO.HIGH)
+                time.sleep(period)
+            else:
+                on = period * (d / 255.0)
+                off = period - on
+                GPIO.output(self.pin, GPIO.HIGH)
+                if on > 0:
+                    time.sleep(on)
+                GPIO.output(self.pin, GPIO.LOW)
+                if off > 0:
+                    time.sleep(off)
 
 
-if __name__ == "__main__":
-    main()
+def quantize_us(us):
+    if us <= 0:
+        return 0
+    q = SERVO_QUANTUM_US
+    return int(round(us / float(q)) * q)
+
+
+def servo_engine():
+    period = 1.0 / float(SERVO_FREQ)
+    while True:
+        t0 = time.perf_counter()
+        with lock:
+            items = [(p, u) for p, u in servo_pulses.items() if u > 0]
+            off_pins = [p for p, u in servo_pulses.items() if u <= 0]
+        for pin in off_pins:
+            try:
+                GPIO.output(pin, GPIO.LOW)
+            except Exception:
+                pass
+        for pin, us in items:
+            try:
+                GPIO.output(pin, GPIO.HIGH)
+                end_h = time.perf_counter() + us / 1000000.0
+                while time.perf_counter() < end_h:
+                    pass
+                GPIO.output(self.pin if False else pin, GPIO.LOW)
+            except Exception:
+                pass
+        remain = (t0 + period) - time.perf_counter()
+        if remain > 0.001:
+            time.sleep(remain)
+
+
+threading.Thread(target=servo_engine, name="servo-engine", daemon=True).start()
+
+
+def board_pin(n):
+    n = int(n)
+    return BCM_TO_BOARD.get(n, n)
+
+
+def ensure_out(pin):
+    pin = board_pin(pin)
+    with lock:
+        if pin not in setup:
+            GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
+            setup.add(pin)
+    return pin
+
+
+def set_pwm(bcm, duty):
+    pin = ensure_out(bcm)
+    with lock:
+        servo_pulses.pop(pin, None)
+        ch = pwm_channels.get(pin)
+        if ch is None:
+            ch = SoftPwm(pin, PWM_FREQ)
+            pwm_channels[pin] = ch
+        ch.set_duty(duty)
+
+
+def set_servo(bcm, pulse_us):
+    pin = ensure_out(bcm)
+    us = quantize_us(max(0, min(2500, int(pulse_us))))
+    with lock:
+        ch = pwm_channels.pop(pin, None)
+        if ch is not None:
+            ch.stop()
+        cur = servo_pulses.get(pin, 0)
+        if us != 0 and abs(us - cur) < SERVO_HYST_US:
+            return
+        servo_pulses[pin] = us
+
+
+def set_out(bcm, value):
+    pin = ensure_out(bcm)
+    with lock:
+        if pin in pwm_channels:
+            pwm_channels[pin].set_duty(255 if value else 0)
+            return
+        if pin in servo_pulses:
+            if not value:
+                servo_pulses[pin] = 0
+            return
+    GPIO.output(pin, GPIO.HIGH if value else GPIO.LOW)
+
+
+print("rdk-gpio-helper ready pwm=%d servo=engine hyst=%d q=%d" % (
+    PWM_FREQ, SERVO_HYST_US, SERVO_QUANTUM_US), flush=True)
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    parts = line.split()
+    cmd = parts[0]
+    try:
+        if cmd == "out":
+            set_out(parts[1], int(parts[2]))
+            print("ok", flush=True)
+        elif cmd == "pwm":
+            set_pwm(parts[1], int(parts[2]))
+            print("ok", flush=True)
+        elif cmd == "servo":
+            set_servo(parts[1], int(parts[2]))
+            print("ok", flush=True)
+        elif cmd == "ping":
+            print("ok", flush=True)
+        else:
+            print("err unknown", flush=True)
+    except Exception as e:
+        print("err", e, flush=True)

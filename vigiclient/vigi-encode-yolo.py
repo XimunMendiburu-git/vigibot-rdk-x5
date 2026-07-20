@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-Vigibot RDK X5 — YOLO overlay:
-  Camera NV12 → YOLOv5s_v7 BPU → draw → libx264 Baseline → TCP 8043
-
-Stream-first: passthrough NV12 frames before model load. See docs/yolo-source.md.
+Vigibot RDK X5 — YOLO overlay (stream-first):
+  Camera NV12 → (warmup frames) → YOLOv5s_v7 draw → libx264 → TCP 8043
 """
-
-from __future__ import annotations
-
 import ctypes
 import json
-import os
 import signal
 import socket
 import subprocess
@@ -20,7 +14,6 @@ import time
 
 import cv2
 import numpy as np
-from hobot_dnn import pyeasy_dnn as dnn
 
 try:
     from hobot_vio import libsrcampy
@@ -30,306 +23,211 @@ except ImportError:
 VIDEO_PORT = 8043
 CAP_WIDTH = 640
 CAP_HEIGHT = 480
-MODEL_SIZE = 640
-NV12_SIZE = CAP_WIDTH * CAP_HEIGHT * 3 // 2
 WARMUP_ATTEMPTS = 200
 FRAME_WAIT_S = 0.02
-MAX_FPS = 15
 MODEL_PATH = "/opt/hobot/model/x5/basic/yolov5s_v7_640x640_nv12.bin"
-POSTPROCESS_SO = "/usr/lib/libpostprocess.so"
 SCORE_TH = 0.4
 NMS_TH = 0.45
 NMS_TOP_K = 20
-PASSTHROUGH_FRAMES = 30
-INFER_EVERY = int(os.environ.get("VIGI_INFER_EVERY", "2"))
+INFER_EVERY = 3
+PASSTHROUGH_FRAMES = 30  # image d'abord, YOLO ensuite
 
 camera = None
 sock = None
 ffmpeg_proc = None
 reader_thread = None
+stop_reader = threading.Event()
 models = None
-post = None
-stop = False
+model_h = 640
+model_w = 640
+last_dets = []
 
 
-def log(msg: str) -> None:
+class hbSysMem_t(ctypes.Structure):
+    _fields_ = [
+        ("phyAddr", ctypes.c_double),
+        ("virAddr", ctypes.c_void_p),
+        ("memSize", ctypes.c_int),
+    ]
+
+
+class hbDNNQuantiShift_yt(ctypes.Structure):
+    _fields_ = [("shiftLen", ctypes.c_int), ("shiftData", ctypes.c_char_p)]
+
+
+class hbDNNQuantiScale_t(ctypes.Structure):
+    _fields_ = [
+        ("scaleLen", ctypes.c_int),
+        ("scaleData", ctypes.POINTER(ctypes.c_float)),
+        ("zeroPointLen", ctypes.c_int),
+        ("zeroPointData", ctypes.c_char_p),
+    ]
+
+
+class hbDNNTensorShape_t(ctypes.Structure):
+    _fields_ = [
+        ("dimensionSize", ctypes.c_int * 8),
+        ("numDimensions", ctypes.c_int),
+    ]
+
+
+class hbDNNTensorProperties_t(ctypes.Structure):
+    _fields_ = [
+        ("validShape", hbDNNTensorShape_t),
+        ("alignedShape", hbDNNTensorShape_t),
+        ("tensorLayout", ctypes.c_int),
+        ("tensorType", ctypes.c_int),
+        ("shift", hbDNNQuantiShift_yt),
+        ("scale", hbDNNQuantiScale_t),
+        ("quantiType", ctypes.c_int),
+        ("quantizeAxis", ctypes.c_int),
+        ("alignedByteSize", ctypes.c_int),
+        ("stride", ctypes.c_int * 8),
+    ]
+
+
+class hbDNNTensor_t(ctypes.Structure):
+    _fields_ = [
+        ("sysMem", hbSysMem_t * 4),
+        ("properties", hbDNNTensorProperties_t),
+    ]
+
+
+class Yolov5PostProcessInfo_t(ctypes.Structure):
+    _fields_ = [
+        ("height", ctypes.c_int),
+        ("width", ctypes.c_int),
+        ("ori_height", ctypes.c_int),
+        ("ori_width", ctypes.c_int),
+        ("score_threshold", ctypes.c_float),
+        ("nms_threshold", ctypes.c_float),
+        ("nms_top_k", ctypes.c_int),
+        ("is_pad_resize", ctypes.c_int),
+    ]
+
+
+libpostprocess = ctypes.CDLL("/usr/lib/libpostprocess.so")
+get_Postprocess_result = libpostprocess.Yolov5PostProcess
+get_Postprocess_result.argtypes = [ctypes.POINTER(Yolov5PostProcessInfo_t)]
+get_Postprocess_result.restype = ctypes.c_char_p
+
+
+def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-def parse_args(argv: list[str]) -> tuple[int, int, int, int]:
-    if len(argv) < 5:
-        log(f"usage: {argv[0]} WIDTH HEIGHT FPS BITRATE")
-        sys.exit(2)
-    width = int(argv[1])
-    height = int(argv[2])
-    fps = min(int(argv[3]), MAX_FPS)
-    bitrate = int(argv[4])
-    bitrate = max(300_000, min(bitrate, 700_000))
-    return width, height, fps, bitrate
+def get_TensorLayout(layout):
+    return 2 if layout == "NCHW" else 0
 
 
-def nv12_to_bgr(nv12: bytes) -> np.ndarray:
-    yuv = np.frombuffer(nv12[:NV12_SIZE], dtype=np.uint8).reshape((CAP_HEIGHT * 3 // 2, CAP_WIDTH))
+def get_hw(pro):
+    if pro.layout == "NCHW":
+        return pro.shape[2], pro.shape[3]
+    return pro.shape[1], pro.shape[2]
+
+
+def bgr2nv12_opencv(image):
+    height, width = image.shape[0], image.shape[1]
+    area = height * width
+    yuv420p = cv2.cvtColor(image, cv2.COLOR_BGR2YUV_I420).reshape((area * 3 // 2,))
+    y = yuv420p[:area]
+    uv_planar = yuv420p[area:].reshape((2, area // 4))
+    uv_packed = uv_planar.transpose((1, 0)).reshape((area // 2,))
+    nv12 = np.empty_like(yuv420p)
+    nv12[:area] = y
+    nv12[area:] = uv_packed
+    return nv12
+
+
+def nv12_to_bgr(nv12, width, height):
+    arr = np.frombuffer(nv12, dtype=np.uint8, count=width * height * 3 // 2)
+    yuv = arr.reshape((height * 3 // 2, width))
     return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
 
 
-def bgr_to_nv12(bgr: np.ndarray) -> bytes:
-    yuv = cv2.cvtColor(bgr, cv2.COLOR_BGR2YUV_I420)
-    h, w = CAP_HEIGHT, CAP_WIDTH
-    y = yuv[0:h, :]
-    u = yuv[h : h + h // 4, :].reshape(h // 2, w // 2)
-    v = yuv[h + h // 4 :, :].reshape(h // 2, w // 2)
-    uv = np.empty((h // 2, w), dtype=np.uint8)
-    uv[:, 0::2] = u
-    uv[:, 1::2] = v
-    return y.tobytes() + uv.tobytes()
-
-
-def load_postprocess() -> ctypes.CDLL:
-    lib = ctypes.CDLL(POSTPROCESS_SO)
-    lib.Yolov5PostProcess.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_float,
-        ctypes.c_float,
-        ctypes.c_int,
-        ctypes.c_int,
-    ]
-    lib.Yolov5PostProcess.restype = ctypes.c_char_p
-    return lib
-
-
-def run_inference(bgr640: np.ndarray) -> list[dict]:
-    global models, post
-    if models is None or post is None:
-        return []
-    nv12_in = cv2.cvtColor(bgr640, cv2.COLOR_BGR2YUV_I420)
-    h = w = MODEL_SIZE
-    y = nv12_in[0:h, :]
-    u = nv12_in[h : h + h // 4, :].reshape(h // 2, w // 2)
-    v = nv12_in[h + h // 4 :, :].reshape(h // 2, w // 2)
-    uv = np.empty((h // 2, w), dtype=np.uint8)
-    uv[:, 0::2] = u
-    uv[:, 1::2] = v
-    tensor = y.tobytes() + uv.tobytes()
-    outputs = models[0].forward(tensor)
-    if not outputs:
-        return []
-    result_str = outputs[0].buffer.tobytes()
-    raw = post.Yolov5PostProcess(
-        result_str,
-        len(result_str),
-        ctypes.c_float(SCORE_TH),
-        ctypes.c_float(NMS_TH),
-        NMS_TOP_K,
-        0,
-    )
-    if not raw:
-        return []
-    text = raw.decode("utf-8", errors="ignore")
-    if len(text) > 16:
-        text = text[16:]
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
-
-
-def draw_detections(bgr: np.ndarray, detections: list[dict]) -> np.ndarray:
-    out = bgr.copy()
-    for det in detections:
-        try:
-            name = det.get("name", "?")
-            score = float(det.get("score", 0))
-            box = det.get("bbox", det.get("box", []))
-            if len(box) < 4:
-                continue
-            x1, y1, x2, y2 = [int(v) for v in box[:4]]
-            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(
-                out,
-                f"{name} {score:.2f}",
-                (x1, max(0, y1 - 5)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                1,
-            )
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
-def start_ffmpeg(fps: int, bitrate: int) -> subprocess.Popen:
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "nv12",
-        "-s",
-        f"{CAP_WIDTH}x{CAP_HEIGHT}",
-        "-r",
-        str(fps),
-        "-i",
-        "pipe:0",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-profile:v",
-        "baseline",
-        "-level",
-        "3.1",
-        "-b:v",
-        str(bitrate),
-        "-maxrate",
-        str(bitrate),
-        "-bufsize",
-        str(bitrate // 2),
-        "-x264-params",
-        "repeat-headers=1:annexb=1:sliced-threads=0",
-        "-f",
-        "h264",
-        "pipe:1",
-    ]
-    return subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-
-def reader_loop() -> None:
-    global sock, ffmpeg_proc, stop
-    sent = 0
-    while not stop and ffmpeg_proc and ffmpeg_proc.stdout and sock:
-        chunk = ffmpeg_proc.stdout.read(65536)
-        if not chunk:
-            break
-        try:
-            sock.sendall(chunk)
-            sent += len(chunk)
-        except OSError as exc:
-            log(f"tcp send failed: {exc}")
-            break
-
-
-def connect_tcp() -> None:
-    global sock
-    deadline = time.time() + 30
-    while not stop and time.time() < deadline:
-        try:
-            s = socket.create_connection(("127.0.0.1", VIDEO_PORT), timeout=2)
-            sock = s
-            log(f"connected tcp://127.0.0.1:{VIDEO_PORT}")
-            return
-        except OSError:
-            time.sleep(0.5)
-    raise RuntimeError(f"cannot connect to tcp 127.0.0.1:{VIDEO_PORT}")
-
-
-def open_camera(fps: int) -> None:
-    global camera
-    camera = libsrcampy.Camera()
-    for attempt in range(WARMUP_ATTEMPTS):
-        if stop:
-            return
-        try:
-            camera.open_cam(0, -1, fps, CAP_WIDTH, CAP_HEIGHT)
-            log(f"camera ready {CAP_WIDTH}x{CAP_HEIGHT}@{fps}")
-            return
-        except Exception as exc:
-            if attempt == 0 or attempt % 20 == 0:
-                log(f"open_cam attempt {attempt + 1}: {exc}")
-            time.sleep(FRAME_WAIT_S)
-    raise RuntimeError("camera.open_cam failed")
-
-
-def load_model() -> None:
-    global models, post
-    log(f"loading model {MODEL_PATH}")
+def load_model():
+    global models, model_h, model_w
+    from hobot_dnn import pyeasy_dnn as dnn
+    log("loading model %s" % MODEL_PATH)
     models = dnn.load(MODEL_PATH)
-    post = load_postprocess()
-    log("yolo model ready")
+    model_h, model_w = get_hw(models[0].inputs[0].properties)
+    log("model ready %dx%d" % (model_w, model_h))
 
 
-def write_nv12(nv12: bytes) -> bool:
-    global ffmpeg_proc
-    if not ffmpeg_proc or not ffmpeg_proc.stdin:
-        return False
-    try:
-        ffmpeg_proc.stdin.write(nv12[:NV12_SIZE])
-        ffmpeg_proc.stdin.flush()
-        return True
-    except BrokenPipeError:
-        return False
+def run_yolo(bgr):
+    resized = cv2.resize(bgr, (model_w, model_h), interpolation=cv2.INTER_AREA)
+    nv12_data = bgr2nv12_opencv(resized)
+    outputs = models[0].forward(nv12_data)
 
+    info = Yolov5PostProcessInfo_t()
+    info.height = model_h
+    info.width = model_w
+    info.ori_height = bgr.shape[0]
+    info.ori_width = bgr.shape[1]
+    info.score_threshold = SCORE_TH
+    info.nms_threshold = NMS_TH
+    info.nms_top_k = NMS_TOP_K
+    info.is_pad_resize = 0
 
-def capture_loop(fps: int) -> None:
-    global camera, stop, models
-    frame_interval = 1.0 / max(fps, 1)
-    frames = 0
-    while not stop and camera:
-        t0 = time.perf_counter()
-        try:
-            img = camera.get_img(2, CAP_WIDTH, CAP_HEIGHT)
-        except Exception as exc:
-            log(f"get_img failed: {exc}")
-            time.sleep(FRAME_WAIT_S)
-            continue
-        if not img or len(img) < NV12_SIZE:
-            time.sleep(FRAME_WAIT_S)
-            continue
-        nv12 = bytes(img[:NV12_SIZE])
-        frames += 1
-
-        if frames <= PASSTHROUGH_FRAMES:
-            if not write_nv12(nv12):
-                break
-            if frames == PASSTHROUGH_FRAMES:
-                load_model()
-            if frames == 1 or frames % 30 == 0:
-                log(f"sent {frames} passthrough nv12 frames")
+    output_tensors = (hbDNNTensor_t * len(models[0].outputs))()
+    for i in range(len(models[0].outputs)):
+        output_tensors[i].properties.tensorLayout = get_TensorLayout(
+            outputs[i].properties.layout
+        )
+        if len(outputs[i].properties.scale_data) == 0:
+            output_tensors[i].properties.quantiType = 0
+            output_tensors[i].sysMem[0].virAddr = ctypes.cast(
+                outputs[i].buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                ctypes.c_void_p,
+            )
         else:
-            try:
-                bgr = nv12_to_bgr(nv12)
-                if models and frames % INFER_EVERY == 0:
-                    resized = cv2.resize(bgr, (MODEL_SIZE, MODEL_SIZE))
-                    dets = run_inference(resized)
-                    bgr = draw_detections(bgr, dets)
-                out_nv12 = bgr_to_nv12(bgr)
-                if not write_nv12(out_nv12):
-                    break
-                if frames % 150 == 0:
-                    log(f"sent {frames} yolo frames")
-            except Exception as exc:
-                log(f"yolo loop error: {exc}")
-                if not write_nv12(nv12):
-                    break
+            output_tensors[i].properties.quantiType = 2
+            output_tensors[i].properties.scale.scaleData = (
+                outputs[i].properties.scale_data.ctypes.data_as(
+                    ctypes.POINTER(ctypes.c_float)
+                )
+            )
+            output_tensors[i].sysMem[0].virAddr = ctypes.cast(
+                outputs[i].buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                ctypes.c_void_p,
+            )
+        for j in range(len(outputs[i].properties.shape)):
+            output_tensors[i].properties.validShape.dimensionSize[j] = (
+                outputs[i].properties.shape[j]
+            )
+        libpostprocess.Yolov5doProcess(output_tensors[i], ctypes.pointer(info), i)
 
-        elapsed = time.perf_counter() - t0
-        sleep_s = frame_interval - elapsed
-        if sleep_s > 0:
-            time.sleep(sleep_s)
+    result_str = get_Postprocess_result(ctypes.pointer(info)).decode("utf-8")
+    return json.loads(result_str[16:])
 
 
-def cleanup(*_args) -> None:
-    global stop, camera, sock, ffmpeg_proc, reader_thread
-    stop = True
-    if ffmpeg_proc and ffmpeg_proc.stdin:
+def draw_dets(bgr, dets):
+    for result in dets:
+        bbox = result["bbox"]
+        score = result["score"]
+        name = result["name"]
+        x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+        cv2.rectangle(bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(
+            bgr,
+            "%s %.2f" % (name, score),
+            (x1, max(0, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+        )
+
+
+def cleanup():
+    global camera, sock, ffmpeg_proc, reader_thread
+    stop_reader.set()
+    if ffmpeg_proc is not None:
         try:
-            ffmpeg_proc.stdin.close()
+            if ffmpeg_proc.stdin:
+                ffmpeg_proc.stdin.close()
         except OSError:
             pass
-    if ffmpeg_proc:
         try:
             ffmpeg_proc.terminate()
             ffmpeg_proc.wait(timeout=2)
@@ -338,40 +236,181 @@ def cleanup(*_args) -> None:
                 ffmpeg_proc.kill()
             except Exception:
                 pass
-    if reader_thread and reader_thread.is_alive():
-        reader_thread.join(timeout=2)
-    if sock:
+        ffmpeg_proc = None
+    if sock is not None:
         try:
             sock.close()
         except OSError:
             pass
-    if camera:
+        sock = None
+    if camera is not None:
         try:
             camera.close_cam()
         except Exception:
             pass
+        camera = None
+    reader_thread = None
 
 
-def main() -> None:
-    global ffmpeg_proc, reader_thread
-    signal.signal(signal.SIGTERM, cleanup)
-    signal.signal(signal.SIGINT, cleanup)
+def handle_signal(_s, _f):
+    cleanup()
+    sys.exit(0)
 
-    _w, _h, fps, bitrate = parse_args(sys.argv)
-    log(
-        f"yolo video: {CAP_WIDTH}x{CAP_HEIGHT} passthrough={PASSTHROUGH_FRAMES} "
-        f"infer_every={INFER_EVERY} @{fps}fps"
+
+def start_ffmpeg_nv12(width, height, fps, bitrate):
+    bps = max(int(bitrate), 300000)
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-fflags", "nobuffer", "-flags", "low_delay",
+        "-f", "rawvideo", "-pix_fmt", "nv12",
+        "-s:v", "%dx%d" % (width, height), "-r", str(fps), "-i", "pipe:0",
+        "-an", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1",
+        "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-b:v", str(bps), "-maxrate", str(bps), "-bufsize", str(bps),
+        "-g", str(fps), "-keyint_min", str(fps), "-bf", "0", "-sc_threshold", "0",
+        "-threads", "2",
+        "-x264-params", "repeat-headers=1:annexb=1:sliced-threads=0",
+        "-flush_packets", "1", "-muxdelay", "0", "-muxpreload", "0",
+        "-f", "h264", "pipe:1",
+    ]
+    return subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, bufsize=0,
     )
-    connect_tcp()
-    ffmpeg_proc = start_ffmpeg(fps, bitrate)
-    reader_thread = threading.Thread(target=reader_loop, daemon=True)
-    reader_thread.start()
-    open_camera(fps)
-    capture_loop(fps)
+
+
+def start_socket_reader(client, source):
+    def _run():
+        try:
+            while not stop_reader.is_set():
+                chunk = source.read(65536)
+                if not chunk:
+                    break
+                client.sendall(chunk)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return t
+
+
+def connect_video_sink(host, port):
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    while True:
+        try:
+            client.connect((host, port))
+            return client
+        except (ConnectionRefusedError, OSError):
+            time.sleep(0.5)
+
+
+def capture_frame():
+    for _ in range(WARMUP_ATTEMPTS):
+        frame = camera.get_img(2, CAP_WIDTH, CAP_HEIGHT)
+        if frame is not None:
+            return frame
+        time.sleep(FRAME_WAIT_S)
+    return None
+
+
+def main():
+    global camera, sock, ffmpeg_proc, reader_thread, last_dets
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    if len(sys.argv) < 4:
+        log("usage: vigi-encode-yolo.py WIDTH HEIGHT FPS [BITRATE]")
+        return 1
+
+    req_w = int(sys.argv[1])
+    req_h = int(sys.argv[2])
+    fps = int(sys.argv[3])
+    bitrate = int(sys.argv[4]) if len(sys.argv) > 4 else 600000
+    fps = min(max(fps, 5), 15)
+    bitrate = min(max(bitrate, 300000), 700000)
+    expected = CAP_WIDTH * CAP_HEIGHT * 3 // 2
+
+    log("yolo stream-first %dx%d@%d br=%d" % (CAP_WIDTH, CAP_HEIGHT, fps, bitrate))
+
+    camera = libsrcampy.Camera()
+    if camera.open_cam(0, -1, fps, CAP_WIDTH, CAP_HEIGHT) != 0:
+        log("camera.open_cam failed")
+        cleanup()
+        return 1
+    if capture_frame() is None:
+        log("camera warmup failed")
+        cleanup()
+        return 1
+
+    log("camera ready, connecting")
+    sock = connect_video_sink("127.0.0.1", VIDEO_PORT)
+    log("connected tcp://127.0.0.1:%d" % VIDEO_PORT)
+
+    try:
+        ffmpeg_proc = start_ffmpeg_nv12(CAP_WIDTH, CAP_HEIGHT, fps, bitrate)
+        reader_thread = start_socket_reader(sock, ffmpeg_proc.stdout)
+    except Exception as exc:
+        log("ffmpeg start failed: %s" % exc)
+        cleanup()
+        return 1
+
+    model_ok = False
+    sent_frames = 0
+    try:
+        while True:
+            frame = camera.get_img(2, CAP_WIDTH, CAP_HEIGHT)
+            for _ in range(3):
+                newer = camera.get_img(2, CAP_WIDTH, CAP_HEIGHT)
+                if newer is None:
+                    break
+                frame = newer
+            if frame is None or len(frame) < expected:
+                time.sleep(FRAME_WAIT_S)
+                continue
+
+            try:
+                # 1) Image tout de suite
+                if sent_frames < PASSTHROUGH_FRAMES:
+                    ffmpeg_proc.stdin.write(frame[:expected])
+                else:
+                    # 2) Charge le modèle une fois le flux démarré
+                    if not model_ok:
+                        load_model()
+                        model_ok = True
+                        log("switching to YOLO overlay")
+
+                    bgr = nv12_to_bgr(frame[:expected], CAP_WIDTH, CAP_HEIGHT)
+                    if (sent_frames - PASSTHROUGH_FRAMES) % INFER_EVERY == 0:
+                        last_dets = run_yolo(bgr)
+                    draw_dets(bgr, last_dets)
+                    ffmpeg_proc.stdin.write(bgr2nv12_opencv(bgr).tobytes())
+                ffmpeg_proc.stdin.flush()
+            except BrokenPipeError:
+                log("ffmpeg stdin closed")
+                return 1
+            except Exception as exc:
+                log("frame error: %s" % exc)
+                try:
+                    ffmpeg_proc.stdin.write(frame[:expected])
+                    ffmpeg_proc.stdin.flush()
+                except BrokenPipeError:
+                    return 1
+
+            sent_frames += 1
+            if sent_frames == 1 or sent_frames % 30 == 0:
+                log("sent %d frames (dets=%d model=%s)" % (
+                    sent_frames, len(last_dets), model_ok))
+            time.sleep(0.001)
+
+    except (BrokenPipeError, ConnectionResetError):
+        log("video sink disconnected")
+        return 0
+    finally:
+        cleanup()
+    return 0
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        cleanup()
+    sys.exit(main())

@@ -1,17 +1,11 @@
 "use strict";
-
-// Stub I2C — no PCA9685 / INA219 on test robot. See docs/gpio-mapping.md.
-
-function openSync(_bus, _options) {
+function bus() {
   return {
-    i2cWriteSync: function () {
-      throw new Error("I2C not implemented on RDK X5 POC");
-    },
-    i2cReadSync: function () {
-      throw new Error("I2C not implemented on RDK X5 POC");
-    },
+    i2cWriteSync: function () { throw new Error("no i2c"); },
+    readWordSync: function () { throw new Error("no i2c"); },
+    readWord: function (a, b, cb) { cb(new Error("no i2c")); },
+    readByte: function (a, b, cb) { cb(new Error("no i2c")); },
     closeSync: function () {},
   };
 }
-
-module.exports = { openSync };
+module.exports = { openSync: function () { return bus(); } };

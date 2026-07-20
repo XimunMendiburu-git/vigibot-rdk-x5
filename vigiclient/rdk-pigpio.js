@@ -1,70 +1,49 @@
 "use strict";
-
 const { spawn } = require("child_process");
-const path = require("path");
 
-const HELPER = path.join(__dirname, "rdk-gpio-helper.py");
-let helperProc = null;
-let helperQueue = Promise.resolve();
+const helper = spawn("python3", ["/usr/local/vigiclient/rdk-gpio-helper.py"], {
+  stdio: ["pipe", "pipe", "inherit"],
+});
+helper.stdin.setDefaultEncoding("utf8");
 
-function ensureHelper() {
-  if (helperProc && !helperProc.killed) {
-    return;
+const queue = [];
+helper.stdout.setEncoding("utf8");
+helper.stdout.on("data", (chunk) => {
+  for (const line of chunk.split("\n")) {
+    if (!line || line.indexOf("ready") >= 0) continue;
+    const cb = queue.shift();
+    if (cb) cb(null, line);
   }
-  helperProc = spawn("python3", [HELPER], {
-    stdio: ["pipe", "ignore", "pipe"],
-  });
-  helperProc.on("exit", () => {
-    helperProc = null;
-  });
-  helperProc.stderr.on("data", (chunk) => {
-    process.stderr.write(chunk);
-  });
-}
+});
+helper.on("exit", (code) => console.error("rdk-gpio-helper exited", code));
 
-function sendLine(line) {
-  ensureHelper();
-  helperQueue = helperQueue.then(
-    () =>
-      new Promise((resolve, reject) => {
-        if (!helperProc || !helperProc.stdin) {
-          reject(new Error("gpio helper not running"));
-          return;
-        }
-        helperProc.stdin.write(line + "\n", (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      })
-  );
-  return helperQueue;
+function send(cmd, cb) {
+  queue.push(cb || (() => {}));
+  try {
+    helper.stdin.write(cmd + "\n");
+  } catch (e) {
+    console.error("gpio send failed", e);
+  }
 }
 
 function Gpio(pin, options) {
   this.pin = pin;
-  this.mode = (options && options.mode) || "output";
+  this._mode = options && options.mode;
+  if (this._mode === module.exports.OUTPUT) {
+    send("out " + this.pin + " 0");
+  }
 }
-
+Gpio.prototype.mode = function (value) { this._mode = value; };
 Gpio.prototype.digitalWrite = function (value) {
-  const v = value ? 1 : 0;
-  return sendLine(`out ${this.pin} ${v}`);
+  send("out " + this.pin + " " + (value ? 1 : 0));
+};
+Gpio.prototype.digitalRead = function () { return 0; };
+Gpio.prototype.pwmWrite = function (value) {
+  send("pwm " + this.pin + " " + (value | 0));
+};
+Gpio.prototype.pwmFrequency = function () {};
+Gpio.prototype.servoWrite = function (pulseWidth) {
+  send("servo " + this.pin + " " + (pulseWidth | 0));
 };
 
-Gpio.prototype.pwmWrite = function (duty) {
-  const d = Math.max(0, Math.min(255, Math.round(Number(duty) || 0)));
-  return sendLine(`pwm ${this.pin} ${d}`);
-};
-
-Gpio.prototype.servoWrite = function (pulseUs) {
-  const us = Math.max(500, Math.min(2500, Math.round(Number(pulseUs) || 1500)));
-  return sendLine(`servo ${this.pin} ${us}`);
-};
-
-Gpio.prototype.digitalRead = function () {
-  return 0;
-};
-
-Gpio.prototype.modeSet = function () {};
-Gpio.prototype.glitchSet = function () {};
-
-module.exports = Gpio;
+module.exports = { Gpio, OUTPUT: 1, INPUT: 0 };

@@ -1,10 +1,57 @@
 {
-  "VIDEOLOCALPORT": 8043,
-  "LOGFILE": "/var/log/vigiclient.log",
-  "CMDDIFFUSION": [
-    [ "/usr/local/vigiclient/vigi-encode-rdk.sh ", "WIDTH ", "HEIGHT ", "FPS ", "BITRATE" ],
-    [ "/usr/local/vigiclient/vigi-encode-yolo.sh ", "WIDTH ", "HEIGHT ", "FPS ", "BITRATE" ]
+ "SERVERS": [
+  "https://www.vigibot.com"
+ ],
+ "SECUREMOTEPORT": 8042,
+ "VIDEOLOCALPORT": 8043,
+ "AUDIOLOCALPORT": 8044,
+ "LOGFILE": "/var/log/vigiclient.log",
+ "WIFIFILE": "/proc/net/wireless",
+ "TEMPFILE": "/sys/class/thermal/thermal_zone0/temp",
+ "WIFIRATE": 250,
+ "TEMPRATE": 1000,
+ "CPURATE": 250,
+ "CMDDIFFUSION": [
+  [
+   "/usr/local/vigiclient/vigi-encode-rdk.sh ",
+   "WIDTH ",
+   "HEIGHT ",
+   "FPS ",
+   "BITRATE"
   ],
-  "I2CPCA9685ADDRESS": 64,
-  "I2CPCA9685FREQUENCY": 50
+  [
+   "/usr/local/vigiclient/vigi-encode-yolo.sh ",
+   "WIDTH ",
+   "HEIGHT ",
+   "FPS ",
+   "BITRATE"
+  ]
+ ],
+ "CMDDIFFAUDIO": [
+  "/usr/bin/ffmpeg",
+  " -loglevel fatal",
+  " -f alsa",
+  " -ac 1",
+  " -i hw:RECORDINGDEVICE,0",
+  " -ar 16000",
+  " -c:a pcm_s16le",
+  " -f s16le",
+  " tcp://127.0.0.1:AUDIOLOCALPORT"
+ ],
+ "CMDTTS": "/usr/bin/espeak -v fr -f /tmp/tts.txt --stdout | /usr/bin/aplay -D plughw:PLAYBACKDEVICE",
+ "UPTIMEOUT": 5000,
+ "V4L2": "/usr/bin/true",
+ "LATENCYALARMEND": 60000,
+ "LATENCYALARMBEGIN": 120000,
+ "TXRATE": 33,
+ "SERVORATE": 20,
+ "BEACONRATE": 10000,
+ "CW2015ADDRESS": 98,
+ "MAX17043ADDRESS": 54,
+ "BQ27441ADDRESS": 85,
+ "INA219ADDRESS": 69,
+ "GAUGERATE": 250,
+ "PCA9685FREQUENCY": 50,
+ "INPUT": 2,
+ "UNUSED": -1
 }
