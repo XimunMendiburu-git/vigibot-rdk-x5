@@ -1,7 +1,15 @@
 "use strict";
 const { spawn } = require("child_process");
+const fs = require("fs");
 
-const helper = spawn("python3", ["/usr/local/vigiclient/rdk-gpio-helper.py"], {
+const nativeHelper = "/usr/local/vigiclient/rdk-gpio-helper";
+const helperCommand = process.env.VIGI_GPIO_HELPER ||
+  (fs.existsSync(nativeHelper) ? nativeHelper : "python3");
+const helperArgs = helperCommand === "python3"
+  ? ["/usr/local/vigiclient/rdk-gpio-helper.py"]
+  : [];
+
+const helper = spawn(helperCommand, helperArgs, {
   stdio: ["pipe", "pipe", "inherit"],
 });
 helper.stdin.setDefaultEncoding("utf8");
@@ -15,7 +23,8 @@ helper.stdout.on("data", (chunk) => {
     if (cb) cb(null, line);
   }
 });
-helper.on("exit", (code) => console.error("rdk-gpio-helper exited", code));
+helper.on("exit", (code) =>
+  console.error("rdk-gpio-helper exited", helperCommand, code));
 
 function send(cmd, cb) {
   queue.push(cb || (() => {}));

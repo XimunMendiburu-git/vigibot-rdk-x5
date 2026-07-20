@@ -10,9 +10,9 @@ Ce dépôt versionne les scripts adaptés, la configuration exemple, les unités
 |-------|------|------------------|
 | Vidéo source 0 (H.264) | OK | libx264 software (ffmpeg) |
 | Vidéo source 1 (YOLO) | OK | Pipeline Python + BPU, stream-first |
-| Moteurs DC | OK | Soft PWM 250 Hz + deadzone ±15 |
-| Buzzer | OK | Soft PWM via bridge GPIO |
-| Servos | Dégradé | Soft PWM 50 Hz — tremblement au repos |
+| Moteurs DC | OK | Soft PWM C 250 Hz + deadzone ±15 |
+| Buzzer | OK | Soft PWM via bridge WiringPi C |
+| Servos | En validation | Soft PWM C temps réel à 50 Hz, BCM7 inclus |
 | Encodeur H.264 matériel | Abandonné | Incompatible décodeur navigateur Vigibot |
 | PCA9685 | Non disponible | Pas de module sur le robot de test |
 
@@ -29,7 +29,7 @@ flowchart LR
     Node[clientrobotpi.js]
     Enc0[vigi-encode-rdk.py]
     Enc1[vigi-encode-yolo.py]
-    GpioBridge[rdk-gpio-helper.py]
+    GpioBridge[rdk-gpio-helper C]
     Node -->|"TCP 8043"| Enc0
     Node -->|"TCP 8043"| Enc1
     Node --> GpioBridge
@@ -48,7 +48,7 @@ L'encodeur vidéo est un **process externe** lancé via `CMDDIFFUSION` (`sys.jso
 | Carte | RDK X5, Ubuntu 22.04, kernel 6.1.x |
 | Caméra | IMX219 (CSI) |
 | Client Vigibot | `clientrobotpi.js` installé dans `/usr/local/vigiclient/` |
-| Runtime | Node.js, Python 3, ffmpeg, `Hobot.GPIO`, `hobot_dnn`, `hobot_vio` |
+| Runtime | Node.js, Python 3, ffmpeg, WiringPi RDK, `hobot_dnn`, `hobot_vio` |
 | Modèle YOLO | `/opt/hobot/model/x5/basic/yolov5s_v7_640x640_nv12.bin` |
 
 ## Installation rapide
@@ -96,7 +96,7 @@ sudo cp config/robot.json.example /usr/local/vigiclient/robot.json
 sudo nano /usr/local/vigiclient/robot.json   # NAME, PASSWORD Vigibot
 ```
 
-`sys.json` est créé depuis l'exemple si absent. La config hardware officielle Vigibot Pi (numéros **BCM**) est conservée ; la traduction BCM→BOARD se fait dans `rdk-gpio-helper.py`.
+`sys.json` est créé depuis l'exemple si absent. La config hardware officielle Vigibot Pi (numéros **BCM**) est conservée ; la traduction BCM→BOARD et le soft PWM temps réel sont assurés par `rdk-gpio-helper` (C/WiringPi). Le helper Python reste présent comme solution de repli.
 
 ## Exploitation
 

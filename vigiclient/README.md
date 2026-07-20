@@ -6,8 +6,10 @@ Scripts déployés vers `/usr/local/vigiclient/` par `install/install.sh`.
 |---------|------|
 | `vigi-encode-rdk.py` / `.sh` | Source vidéo 0 (caméra brute, libx264) |
 | `vigi-encode-yolo.py` / `.sh` | Source vidéo 1 (overlay YOLO BPU) |
-| `rdk-pigpio.js` | API pigpio-like → `rdk-gpio-helper.py` |
-| `rdk-gpio-helper.py` | Daemon GPIO (BCM→BOARD, soft PWM) |
+| `rdk-pigpio.js` | API pigpio-like → helper natif, fallback Python |
+| `rdk-gpio-helper.c` | Source du daemon WiringPi C (BCM→BOARD, soft PWM temps réel) |
+| `rdk-gpio-helper` | Binaire compilé sur la RDK par l'installateur |
+| `rdk-gpio-helper.py` | Ancien backend Hobot.GPIO, conservé comme fallback |
 | `rdk-i2c-bus.js` / `rdk-pca9685.js` | Stubs (pas de module I2C sur le robot de test) |
 
 ## `clientrobotpi.js`

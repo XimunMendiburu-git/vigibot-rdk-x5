@@ -131,7 +131,7 @@ Maintien instable, vibration audible/visible au repos.
 
 ### Cause
 
-Soft PWM 50 Hz en userspace — limite atteinte pour les servos.
+Ancien backend Python : soft PWM userspace non temps-réel.
 
 ### Options
 
@@ -139,10 +139,10 @@ Soft PWM 50 Hz en userspace — limite atteinte pour les servos.
 |--------|--------|
 | Accepter | Vivre avec pour téléop basique |
 | Couper au repos | Pulse 0 (Floating) — plus de tremblement, pas de couple de maintien |
-| **Recommandé** | PWM hardware X5 via `srpi-config` + `GPIO.PWM(50)` |
+| **Actuel** | Helper WiringPi C avec threads `SCHED_FIFO`, validation en cours |
 | Long terme | Ajouter module PCA9685 (I2C) |
 
-Voir [gpio-mapping.md](./gpio-mapping.md) section PWM hardware.
+Ne pas activer PWM0/PWM1 avec un overlay personnalisé : ce test a désactivé le Wi-Fi du robot de référence. Voir [gpio-mapping.md](./gpio-mapping.md).
 
 ---
 
@@ -224,6 +224,7 @@ for b in 0 2 3 4 5 6 7 8; do echo "=== bus $b ==="; i2cdetect -y -r $b 2>/dev/nu
 |-------|----------|-------|
 | Encodeur HW incompatible navigateur | Moyenne | Analyse slices NAL, WebCodecs |
 | Servos tremblent au repos | Haute | PWM HW X5 ou PCA9685 |
+| Overlay PWM0/PWM1 coupe le Wi-Fi | Critique | Ne pas déployer ; analyser le pinmux hors production |
 | Switch source CSI fragile | Moyenne | Cleanup garanti, watchdog encodeur |
 | Failsafe latence neutralisé | Haute | Ré-implémenter garde timestamp |
 | Stubs I2C/PCA | Basse | Si hardware ajouté |

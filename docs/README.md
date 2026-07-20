@@ -31,8 +31,9 @@ Documentation du proof-of-concept d'intégration d'un robot **RDK X5** (D-Roboti
 ├── robot.json                # Config hardware (souvent poussée par le serveur)
 ├── vigi-encode-rdk.sh/.py    # Encodeur vidéo source 0
 ├── vigi-encode-yolo.sh/.py   # Encodeur vidéo source 1 (YOLO)
-├── rdk-pigpio.js             # Wrapper GPIO (spawn helper Python)
-├── rdk-gpio-helper.py        # Daemon Hobot.GPIO (BCM→BOARD, PWM, servo)
+├── rdk-pigpio.js             # Wrapper GPIO (helper natif, fallback Python)
+├── rdk-gpio-helper.c         # Daemon WiringPi C (BCM→BOARD, PWM, servo)
+├── rdk-gpio-helper.py        # Ancien daemon Hobot.GPIO de secours
 ├── rdk-i2c-bus.js            # Stub I2C (no-op à l'origine)
 └── rdk-pca9685.js            # Stub PCA (no-op à l'origine)
 ```
@@ -43,9 +44,9 @@ Documentation du proof-of-concept d'intégration d'un robot **RDK X5** (D-Roboti
 |-------|------|------------------|
 | Vidéo source 0 (H.264) | OK | libx264 software (ffmpeg) |
 | Vidéo source 1 (YOLO) | OK | Pipeline Python + BPU, stream-first |
-| Moteurs DC | OK | Soft PWM 250 Hz + deadzone ±15 |
-| Buzzer | OK | Soft PWM via bridge GPIO |
-| Servos | Dégradé | Soft PWM 50 Hz — tremblement au repos |
+| Moteurs DC | OK | Soft PWM WiringPi C 250 Hz + deadzone ±15 |
+| Buzzer | OK | Soft PWM via bridge WiringPi C |
+| Servos | En validation | Soft PWM C temps réel à 50 Hz |
 | Encodeur H.264 matériel | Abandonné | Incompatible décodeur navigateur |
 | PCA9685 | Non disponible | Pas de module physique sur le robot |
 | PWM hardware X5 (servos) | À faire | 8 canaux, 50 Hz via `srpi-config` |

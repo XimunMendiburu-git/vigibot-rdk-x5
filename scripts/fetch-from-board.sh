@@ -21,6 +21,7 @@ VIGI_FILES=(
   vigi-encode-yolo.py
   vigi-encode-yolo.sh
   rdk-pigpio.js
+  rdk-gpio-helper.c
   rdk-gpio-helper.py
   rdk-i2c-bus.js
   rdk-pca9685.js

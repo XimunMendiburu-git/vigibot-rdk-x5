@@ -40,6 +40,8 @@ require_cmd() {
 require_cmd node
 require_cmd python3
 require_cmd ffmpeg
+require_cmd gcc
+require_cmd git
 
 if [[ ! -f /opt/hobot/model/x5/basic/yolov5s_v7_640x640_nv12.bin ]]; then
   echo "WARN: YOLO model not found at /opt/hobot/model/x5/basic/yolov5s_v7_640x640_nv12.bin"
@@ -77,6 +79,11 @@ done
 
 chmod +x "${TARGET}/"*.sh 2>/dev/null || true
 chmod +x "${TARGET}/"*.py 2>/dev/null || true
+chmod +x "${REPO_ROOT}/install/"*.sh "${REPO_ROOT}/scripts/"*.sh 2>/dev/null || true
+
+echo "==> Install WiringPi and build native GPIO helper"
+bash "${REPO_ROOT}/install/install-wiringpi.sh"
+bash "${REPO_ROOT}/scripts/build-gpio-helper.sh" "${TARGET}/rdk-gpio-helper"
 
 echo "==> Install config examples (if missing)"
 if [[ ! -f "${TARGET}/sys.json" ]]; then

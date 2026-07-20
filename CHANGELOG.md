@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- Replaced the Python GPIO backend with a native WiringPi C helper
+- Moved motor, buzzer and servo generation to real-time soft-PWM threads
+- Kept the Python GPIO helper as an automatic fallback
+- Disabled custom PWM pinmux overlays after an overlay caused loss of Wi-Fi
+- Added kernel GPIO control for the left IR illuminator on GPIO357/BOARD33
+
 ## [v0.1.0-poc] — 2026-07-19
 
 Initial proof-of-concept release for Vigibot on RDK X5.

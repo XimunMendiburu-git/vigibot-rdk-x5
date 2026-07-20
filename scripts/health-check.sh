@@ -35,10 +35,13 @@ else
   echo "WARN no vigi-encode process (may start on video connect)"
 fi
 
-if pgrep -f rdk-gpio-helper.py >/dev/null; then
-  echo "OK  rdk-gpio-helper.py running"
+if pgrep -x rdk-gpio-helper >/dev/null; then
+  echo "OK  native rdk-gpio-helper running"
+elif pgrep -f rdk-gpio-helper.py >/dev/null; then
+  echo "WARN Python GPIO fallback running (native helper unavailable)"
 else
-  echo "WARN rdk-gpio-helper.py not running (starts on first GPIO command)"
+  echo "FAIL no GPIO helper running"
+  FAIL=1
 fi
 
 if ss -ltn 2>/dev/null | grep -q ':8043'; then

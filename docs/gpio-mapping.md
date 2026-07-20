@@ -6,12 +6,12 @@ La config hardware Vigibot **officielle Raspberry Pi** utilise des numéros **BC
 
 | | Raspberry Pi | RDK X5 |
 |--|--------------|--------|
-| Bibliothèque | `pigpio` | `Hobot.GPIO` |
+| Bibliothèque | `pigpio` | WiringPi RDK (C), fallback `Hobot.GPIO` |
 | Numérotation | BCM | **BOARD** (broche physique 1–40) |
-| Soft PWM | Partout via pigpio | **Non** (Hobot ne l'implémente pas) |
+| Soft PWM | Partout via pigpio | Implémenté par le helper C |
 | PWM hardware | Limité | 8 canaux sur broches dédiées (X5) |
 
-**Stratégie POC** : conserver la config Vigibot BCM inchangée ; traduire BCM→BOARD dans un daemon Python.
+**Stratégie actuelle** : conserver la config Vigibot BCM inchangée ; traduire BCM→BOARD et générer le PWM dans un daemon WiringPi C. Le backend Python initial reste disponible comme fallback.
 
 ---
 
@@ -42,13 +42,13 @@ Vigibot « croyait » piloter le matériel mais aucune commande n'aboutissait.
 flowchart LR
   Node[clientrobotpi.js]
   RdkJs[rdk-pigpio.js]
-  Helper[rdk-gpio-helper.py]
-  Hobot[Hobot.GPIO BOARD]
+  Helper[rdk-gpio-helper C]
+  WiringPi[WiringPi BOARD]
   Pins[Header 40-pin]
   Node --> RdkJs
   RdkJs -->|"spawn stdin"| Helper
-  Helper -->|"BCM to BOARD"| Hobot
-  Hobot --> Pins
+  Helper -->|"BCM to BOARD + soft PWM"| WiringPi
+  WiringPi --> Pins
 ```
 
 ### Protocole stdin (texte)
@@ -64,7 +64,8 @@ flowchart LR
 | Fichier | Rôle |
 |---------|------|
 | `rdk-pigpio.js` | API pigpio-like, spawn helper, `digitalWrite`, `pwmWrite`, `servoWrite` |
-| `rdk-gpio-helper.py` | Daemon persistant, traduction BCM→BOARD, soft PWM, soft servo |
+| `rdk-gpio-helper.c` | Daemon WiringPi, traduction BCM→BOARD, soft PWM temps réel |
+| `rdk-gpio-helper.py` | Ancien backend Hobot.GPIO, fallback automatique si le binaire est absent |
 
 Node appelle `setServos` → `servoWrite(pwm_µs)` quand `ADRESSE == -1` (pas de PCA). Idem `setPwmPwm` → `pwmWrite` pour les moteurs.
 
@@ -100,9 +101,9 @@ Validation matérielle : blink `simple_out.py` sur BOARD **37** → roue arrièr
 
 | Élément | Détail |
 |---------|--------|
-| Mécanisme | Soft PWM 250 Hz, thread par pin |
+| Mécanisme | Soft PWM C 250 Hz, thread par pin |
 | Deadzone | `INS` Vigibot : `[-100, -15, 15, 100]` (au lieu de ±1) |
-| CPU | ~17 % charge totale |
+| CPU | Helper natif mesuré à ~0,7 % au repos (charge active à mesurer) |
 | Contrôle vitesse | Progressif (duty 0–255) |
 
 **Problème initial** : roues qui tournaient au neutre (offset joystick + deadzone ±1 trop étroite).
@@ -111,7 +112,7 @@ Validation matérielle : blink `simple_out.py` sur BOARD **37** → roue arrièr
 
 Piloté via `pwmWrite` → soft PWM. Validé.
 
-### Servos (`Servos`, pulses 500–2500 µs) — DÉGRADÉ
+### Servos (`Servos`, pulses 500–2500 µs) — EN VALIDATION
 
 | Tentative | Résultat |
 |-----------|----------|
@@ -120,14 +121,27 @@ Piloté via `pwmWrite` → soft PWM. Validé.
 | Hystérésis 15–40 µs + quantification 20 µs | Réduit |
 | 1 thread `servo-engine` pour tous les servos | Réduit |
 | `renice -10` sur helper | Marginal |
+| Helper WiringPi C + `SCHED_FIFO` | Déployé, amélioration nette observée |
+| Thread servo unique + impulsions déphasées | Déployé pour réduire jitter et appels de courant simultanés |
 
-**Résultat final** : servos **fonctionnels** mais **tremblement au repos** — jugé insuffisant.
+Le helper C utilise une horloge monotone absolue et un thread temps réel unique. Les impulsions des servos sont réparties dans la période de 20 ms afin d'éviter que plusieurs servos tirent leur courant au même instant. BCM7/BOARD26, qui ne dispose pas de PWM hardware, utilise le même moteur soft PWM C que les autres servos.
 
-**Cause racine** : soft PWM userspace Linux (non temps-réel), concurrence avec threads moteurs 250 Hz.
+La stabilité doit encore être validée sous charge vidéo et avec les quatre servos actifs.
 
-### IR / Switches (`Gpios`) — Non validés en POC
+### IR (`Gpios`) — bridge validé
 
-Devraient fonctionner via `digitalWrite` une fois le bridge en place. Non testés explicitement.
+BOARD21/BCM9 est piloté directement par WiringPi. BOARD33/BCM13 appartient
+à la seconde banque LSIO et reste réservée par PWM3 au démarrage ; le fork
+WiringPi X5 ne sait pas la commuter correctement. Le helper natif détache
+donc PWM3 puis pilote GPIO357 via l'interface GPIO du noyau. Ce contournement
+ne touche à aucun GPIO moteur ou servo.
+
+Les boutons Vigibot `COMMANDS1` 0 et 1 commandent respectivement les
+illuminateurs gauche et droit.
+
+### Switches (`Gpios`) — Non validés
+
+Les sorties Switch 4–7 restent à tester explicitement.
 
 ---
 
@@ -145,7 +159,7 @@ Câblage header type Pi : SDA pin **3**, SCL pin **5** (doc RDK X5).
 
 ---
 
-## 7. PWM hardware X5 (piste recommandée pour servos)
+## 7. PWM hardware X5 (expérimental, non activé)
 
 Correction d'une hypothèse erronée (sample X3) : sur **X5**, la fréquence PWM HW est configurable sur une plage large.
 
@@ -163,14 +177,11 @@ Correction d'une hypothèse erronée (sample X3) : sur **X5**, la fréquence PWM
 | PWM2 | 28, 27 | Boost + rear R IN2 (BCM 1, 27) |
 | PWM3 | 32, 33 | (souvent enabled par défaut) |
 
-### Activation
+### Avertissement d'activation
 
-```bash
-srpi-config
-# 3 Interface Options → I3 Peripheral bus config
-# pwm0, pwm1, pwm2 → okay
-# reboot
-```
+Ne pas activer PWM0/PWM1 avec un overlay personnalisé sur le robot de référence. Le test du 20 juillet 2026 a rendu l'interface Wi-Fi indisponible jusqu'au retrait de l'overlay dans `/boot/config.txt` et au redémarrage.
+
+La cause exacte dans le pinmux n'est pas encore isolée. Le helper natif laisse donc le PWM hardware désactivé par défaut et n'exige aucun overlay.
 
 ### Usage servo (principe)
 
@@ -201,18 +212,19 @@ Activer un PWM **désactive** la fonction multiplexée sur ces broches.
 
 | Contournement | Conséquence |
 |---------------|-------------|
-| Bridge Python persistant | Latence stdin/stdout, process externe à superviser |
-| Soft PWM moteurs | Jitter sous charge, non temps-réel |
-| Soft PWM servos | Tremblement au repos, maintien imprécis |
+| Bridge C persistant | Process externe à superviser, fallback Python conservé |
+| Soft PWM moteurs | Temps réel best-effort, charge active à mesurer |
+| Soft PWM servos | Plus déterministe que Python, validation mécanique requise |
 | Config BCM + traduction | Mapping à maintenir, risque d'erreur si câblage ≠ Pi |
 | Stubs I2C/PCA laissés | INA219 / PCA non fonctionnels côté Vigibot |
+| Overlay PWM0/PWM1 | Conflit observé avec le Wi-Fi ; interdit dans l'installation |
 
 ---
 
 ## 9. Pistes d'amélioration
 
-1. Migrer servos (et idéalement moteurs) vers **PWM hardware X5** via `GPIO.PWM`
-2. Étendre `rdk-gpio-helper.py` pour utiliser HW PWM sur pins 29/31/37/24/28/27/32/33
-3. Implémenter vrai `rdk-i2c-bus.js` + `rdk-pca9685.js` si module PCA ajouté
-4. Valider IR illuminators et switches
-5. Documenter et tester chaque broche avec `test_all_pins.py` / multimètre
+1. Mesurer le jitter du helper WiringPi C avec les quatre servos et la vidéo actifs
+2. Identifier précisément le conflit pinmux/Wi-Fi avant tout nouvel essai de PWM hardware
+3. Évaluer PWM3 sur BOARD 32/33 avec recâblage, sans overlay PWM0/PWM1
+4. Implémenter vrai `rdk-i2c-bus.js` + `rdk-pca9685.js` si module PCA ajouté
+5. Valider IR illuminators et switches
