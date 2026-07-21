@@ -29,7 +29,7 @@ else
   FAIL=1
 fi
 
-if pgrep -f 'vigi-encode-rdk|vigi-encode-yolo' >/dev/null; then
+if pgrep -f 'vigi-encode-rdk|vigi-encode-yolo|vigi-encode-pose' >/dev/null; then
   echo "OK  video encoder process running"
 else
   echo "WARN no vigi-encode process (may start on video connect)"

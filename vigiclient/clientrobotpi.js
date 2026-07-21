@@ -265,7 +265,8 @@ function sigterms(callback) {
 
  function loop() {
   if(i == USER.CMDDIFFUSION.length) {
-   callback();
+   // Camera backends release CSI asynchronously after SIGTERM.
+   setTimeout(callback, 3000);
    return;
   }
   sigterm("Diffusion" + i, USER.CMDDIFFUSION[i][0], loop);

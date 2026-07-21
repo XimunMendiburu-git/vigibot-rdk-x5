@@ -39,7 +39,7 @@ flowchart LR
 | Parameter | Value |
 |-----------|--------|
 | Resolution | 640×480 (native, regardless of the Vigibot request) |
-| FPS | 15 (capped; configuration requests 30) |
+| FPS | 15 (capped; configuration may request 30) |
 | Bitrate | ~700 kbps (capped to 300k–700k) |
 | Profile | baseline, level 3.1 |
 | Preset | ultrafast, tune zerolatency |

@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Third video source with TROS mono2d body keypoint tracking (`vigi-encode-pose`)
+- Pose source documentation (`docs/pose-source.md`)
+
 ### Changed
 
 - Replaced the Python GPIO backend with a native WiringPi C helper
@@ -11,6 +16,7 @@ All notable changes to this project are documented here.
 - Kept the Python GPIO helper as an automatic fallback
 - Disabled custom PWM pinmux overlays after an overlay caused loss of Wi-Fi
 - Added kernel GPIO control for the left IR illuminator on GPIO357/BOARD33
+- Installer now ensures the pose `CMDDIFFUSION` entry exists on upgrades
 
 ## [v0.1.0-poc] — 2026-07-19
 

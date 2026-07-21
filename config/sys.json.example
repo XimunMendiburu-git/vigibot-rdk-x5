@@ -25,6 +25,13 @@
    "HEIGHT ",
    "FPS ",
    "BITRATE"
+  ],
+  [
+   "/usr/local/vigiclient/vigi-encode-pose.sh ",
+   "WIDTH ",
+   "HEIGHT ",
+   "FPS ",
+   "BITRATE"
   ]
  ],
  "CMDDIFFAUDIO": [

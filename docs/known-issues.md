@@ -26,7 +26,7 @@ sleep 5
 grep -E 'open_cam|connected|sent |camera ready' /var/log/vigiclient.log | tail -20
 ```
 
-**Warning**: avoid using `pkill -f vigi-encode` without a more specific pattern—it may match the shell command line and produce unexpected `Killed` messages. Prefer `pgrep -f 'vigi-encode-yolo|vigi-encode-rdk'`.
+**Warning**: avoid using `pkill -f vigi-encode` without a more specific pattern—it may match the shell command line and produce unexpected `Killed` messages. Prefer `pgrep -f 'vigi-encode-yolo|vigi-encode-rdk|vigi-encode-pose'`.
 
 ### Prevention
 

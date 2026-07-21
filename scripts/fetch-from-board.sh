@@ -20,6 +20,9 @@ VIGI_FILES=(
   vigi-encode-rdk.sh
   vigi-encode-yolo.py
   vigi-encode-yolo.sh
+  vigi-encode-pose.py
+  vigi-encode-pose.sh
+  vigi-pose.launch.py
   rdk-pigpio.js
   rdk-gpio-helper.c
   rdk-gpio-helper.py

@@ -10,6 +10,7 @@ This repository contains the adapted scripts, sample configuration, systemd unit
 |-----------|--------|-------------------|
 | Video source 0 (H.264) | OK | Software libx264 (ffmpeg) |
 | Video source 1 (YOLO) | OK | Python + BPU pipeline, stream-first |
+| Video source 2 (pose) | Under validation | TROS mono2d body keypoints + libx264 |
 | DC motors | OK | 250 Hz C software PWM + ±15 dead zone |
 | Buzzer | OK | Software PWM through the WiringPi C bridge |
 | Servos | Under validation | Real-time 50 Hz C software PWM, including BCM7 |
@@ -29,9 +30,11 @@ flowchart LR
     Node[clientrobotpi.js]
     Enc0[vigi-encode-rdk.py]
     Enc1[vigi-encode-yolo.py]
+    Enc2[vigi-encode-pose.py]
     GpioBridge[rdk-gpio-helper C]
     Node -->|"TCP 8043"| Enc0
     Node -->|"TCP 8043"| Enc1
+    Node -->|"TCP 8043"| Enc2
     Node --> GpioBridge
   end
   Server <-->|"H264 + telemetry"| Node
@@ -113,7 +116,7 @@ sudo ./scripts/health-check.sh
 If the screen is black or `Mipi csi0 has been used` appears:
 
 ```bash
-kill -9 $(pgrep -f 'vigi-encode-yolo|vigi-encode-rdk') 2>/dev/null
+kill -9 $(pgrep -f 'vigi-encode-yolo|vigi-encode-rdk|vigi-encode-pose') 2>/dev/null
 sleep 2
 sudo systemctl restart vigiclient
 ```
@@ -142,6 +145,7 @@ Full runbook: [docs/known-issues.md](docs/known-issues.md).
 | [docs/poc-vigibot-rdk-x5.md](docs/poc-vigibot-rdk-x5.md) | POC report and table of 12 configurations |
 | [docs/video-encoding.md](docs/video-encoding.md) | Software H.264 vs. hardware Wave521 |
 | [docs/yolo-source.md](docs/yolo-source.md) | Second YOLO BPU source |
+| [docs/pose-source.md](docs/pose-source.md) | Third body-keypoint source |
 | [docs/gpio-mapping.md](docs/gpio-mapping.md) | GPIO bridge, BCM→BOARD, hardware PWM |
 | [docs/known-issues.md](docs/known-issues.md) | Operations runbook |
 

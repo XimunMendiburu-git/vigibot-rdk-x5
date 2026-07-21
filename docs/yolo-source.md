@@ -21,8 +21,9 @@ Two entries in `CMDDIFFUSION`:
 |-------|--------|---------------|
 | 0 | `vigi-encode-rdk.sh` | Raw camera (`SOURCE: 0`) |
 | 1 | `vigi-encode-yolo.sh` | Camera + YOLO (`SOURCE: 1`) |
+| 2 | `vigi-encode-pose.sh` | Camera + body keypoints (`SOURCE: 2`) |
 
-**Important**: `"SOURCE": 1` corresponds to the **second `CMDDIFFUSION` entry** (index 1). `"SOURCE": 2` would require a third entry.
+**Important**: `"SOURCE": 1` corresponds to the **second `CMDDIFFUSION` entry** (index 1). `"SOURCE": 2` is the body-keypoint source documented in [pose-source.md](./pose-source.md).
 
 ### Hardware Configuration
 

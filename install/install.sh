@@ -91,6 +91,30 @@ if [[ ! -f "${TARGET}/sys.json" ]]; then
   echo "    created ${TARGET}/sys.json from example"
 else
   echo "    kept existing ${TARGET}/sys.json"
+  python3 - <<'PY'
+import json
+from pathlib import Path
+path = Path("/usr/local/vigiclient/sys.json")
+data = json.loads(path.read_text())
+wanted = [
+    "/usr/local/vigiclient/vigi-encode-pose.sh ",
+    "WIDTH ",
+    "HEIGHT ",
+    "FPS ",
+    "BITRATE",
+]
+cmds = data.setdefault("CMDDIFFUSION", [])
+if len(cmds) < 3:
+    cmds.append(wanted)
+    path.write_text(json.dumps(data, indent=1) + "\n")
+    print("    appended pose CMDDIFFUSION entry")
+elif cmds[2] != wanted:
+    cmds[2] = wanted
+    path.write_text(json.dumps(data, indent=1) + "\n")
+    print("    updated pose CMDDIFFUSION entry")
+else:
+    print("    pose CMDDIFFUSION entry already present")
+PY
 fi
 
 if [[ ! -f "${TARGET}/robot.json" ]] || [[ "${FORCE_CONFIG}" -eq 1 ]]; then
@@ -106,6 +130,8 @@ fi
 echo "==> Python syntax check"
 python3 -m py_compile "${TARGET}/vigi-encode-rdk.py"
 python3 -m py_compile "${TARGET}/vigi-encode-yolo.py"
+python3 -m py_compile "${TARGET}/vigi-encode-pose.py"
+python3 -m py_compile "${TARGET}/vigi-pose.launch.py"
 python3 -m py_compile "${TARGET}/rdk-gpio-helper.py"
 
 echo "==> Install systemd units"
