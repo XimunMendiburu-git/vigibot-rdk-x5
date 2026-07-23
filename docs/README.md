@@ -30,11 +30,12 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 ├── clientrobotpi.js          # Main Vigibot client
 ├── sys.json                  # Ports, CMDDIFFUSION, I2C addresses
 ├── robot.json                # Hardware configuration (often pushed by the server)
-├── vigi-encode-rdk.sh/.py    # Video source 0 encoder
-├── vigi-encode-yolo.sh/.py   # Video source 1 encoder (YOLO)
+├── vigi-encode-x264          # Video source 0 C++ binary (libx264)
+├── vigi-encode-rdk.sh        # Wrapper source 0
+├── vigi-encode-yolo          # Video source 1 C++ binary (YOLO)
+├── vigi-encode-yolo.sh       # Wrapper source 1
 ├── vigi-encode-pose          # Video source 2 C++ binary (body keypoints)
-├── vigi-encode-pose.sh/.py   # Wrapper + legacy TROS fallback
-├── vigi-pose.launch.py       # Legacy TROS launch (fallback only)
+├── vigi-encode-pose.sh       # Wrapper source 2
 ├── rdk-pigpio.js             # GPIO wrapper (native helper, Python fallback)
 ├── rdk-gpio-helper.c         # WiringPi C daemon (BCM→BOARD, PWM, servo)
 ├── rdk-gpio-helper.py        # Legacy fallback Hobot.GPIO daemon
@@ -46,9 +47,9 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 
 | Area | Status | Selected solution |
 |-------|------|------------------|
-| Video source 0 (H.264) | OK | Software libx264 (ffmpeg) |
-| Video source 1 (YOLO) | OK | Python + BPU pipeline, stream-first |
-| Video source 2 (pose) | Under validation | Full C++ BPU + libx264 (TROS fallback) |
+| Video source 0 (H.264) | OK | Full C++ libx264 |
+| Video source 1 (YOLO) | OK | Full C++ BPU + libx264 |
+| Video source 2 (pose) | OK | Full C++ BPU + libx264 |
 | DC motors | OK | WiringPi C soft PWM at 250 Hz + ±15 dead zone |
 | Buzzer | OK | Soft PWM via bridge WiringPi C |
 | Servos | Under validation | Real-time C soft PWM at 50 Hz |

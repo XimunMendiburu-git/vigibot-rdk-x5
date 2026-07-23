@@ -16,13 +16,16 @@ SSH_OPTS=(-o ConnectTimeout=10)
 
 VIGI_FILES=(
   clientrobotpi.js
-  vigi-encode-rdk.py
   vigi-encode-rdk.sh
-  vigi-encode-yolo.py
+  vigi-encode-x264.cpp
   vigi-encode-yolo.sh
-  vigi-encode-pose.py
+  vigi-encode-yolo.cpp
+  yolov5_post_process.cpp
+  yolov5_post_process.hpp
   vigi-encode-pose.sh
-  vigi-pose.launch.py
+  vigi-encode-pose.cpp
+  pose_post_process.cpp
+  pose_post_process.hpp
   rdk-pigpio.js
   rdk-gpio-helper.c
   rdk-gpio-helper.py

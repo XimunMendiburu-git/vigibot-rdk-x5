@@ -4,11 +4,12 @@ Scripts deployed to `/usr/local/vigiclient/` by `install/install.sh`.
 
 | File | Purpose |
 |------|---------|
-| `vigi-encode-rdk.py` / `.sh` | Video source 0 (raw camera feed, libx264) |
-| `vigi-encode-yolo.py` / `.sh` | Video source 1 (YOLO BPU overlay) |
-| `vigi-encode-pose.cpp` / binary / `.sh` | Video source 2 (body keypoints, full C++) |
-| `pose_post_process.{hpp,cpp}` | Body box + keypoint parsers for the BPU model |
-| `vigi-encode-pose.py` / `vigi-pose.launch.py` | Legacy TROS fallback only |
+| `vigi-encode-x264.cpp` / binary / `vigi-encode-rdk.sh` | Video source 0 (raw camera, libx264) |
+| `vigi-encode-yolo.cpp` / binary / `.sh` | Video source 1 (YOLO BPU overlay) |
+| `yolov5_post_process.{hpp,cpp}` | YOLO ParseTensor + NMS |
+| `vigi-encode-pose.cpp` / binary / `.sh` | Video source 2 (body keypoints) |
+| `pose_post_process.{hpp,cpp}` | Body box + keypoint parsers |
+| `rebuild-*-on-board.sh` | On-board `g++` rebuild helpers |
 | `rdk-pigpio.js` | pigpio-like API → native helper, with Python fallback |
 | `rdk-gpio-helper.c` | WiringPi C daemon source (BCM→BOARD, real-time software PWM) |
 | `rdk-gpio-helper` | Binary compiled on the RDK by the installer |

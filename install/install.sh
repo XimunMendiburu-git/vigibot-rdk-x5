@@ -128,11 +128,36 @@ else
 fi
 
 echo "==> Python syntax check"
-python3 -m py_compile "${TARGET}/vigi-encode-rdk.py"
-python3 -m py_compile "${TARGET}/vigi-encode-yolo.py"
-python3 -m py_compile "${TARGET}/vigi-encode-pose.py"
-python3 -m py_compile "${TARGET}/vigi-pose.launch.py"
 python3 -m py_compile "${TARGET}/rdk-gpio-helper.py"
+
+echo "==> Build C++ video encoders (x264 / yolo / pose) if toolchain present"
+INC_SP="${SPDEV_INC:-/home/sunrise/x5-hobot-spdev/src/clang}"
+if command -v g++ >/dev/null && [[ -d "$INC_SP" ]]; then
+  g++ -O2 -std=c++17 \
+    "${TARGET}/vigi-encode-x264.cpp" \
+    -o "${TARGET}/vigi-encode-x264" \
+    -I"$INC_SP" -lx264 -lspcdev -lpthread \
+    && chmod +x "${TARGET}/vigi-encode-x264" \
+    && echo "    built vigi-encode-x264"
+
+  g++ -O2 -std=c++17 \
+    "${TARGET}/vigi-encode-yolo.cpp" \
+    "${TARGET}/yolov5_post_process.cpp" \
+    -o "${TARGET}/vigi-encode-yolo" \
+    -I"$INC_SP" -I"${TARGET}" -lx264 -lspcdev -ldnn -lopencv_world -lpthread \
+    && chmod +x "${TARGET}/vigi-encode-yolo" \
+    && echo "    built vigi-encode-yolo"
+
+  g++ -O2 -std=c++17 \
+    "${TARGET}/vigi-encode-pose.cpp" \
+    "${TARGET}/pose_post_process.cpp" \
+    -o "${TARGET}/vigi-encode-pose" \
+    -I"$INC_SP" -I"${TARGET}" -lx264 -lspcdev -ldnn -lopencv_world -lpthread \
+    && chmod +x "${TARGET}/vigi-encode-pose" \
+    && echo "    built vigi-encode-pose"
+else
+  echo "    WARN: g++ or SP headers missing — deploy prebuilt binaries or run rebuild-*-on-board.sh"
+fi
 
 echo "==> Install systemd units"
 cp "${REPO_ROOT}/systemd/vigiclient.service" /etc/systemd/system/vigiclient.service

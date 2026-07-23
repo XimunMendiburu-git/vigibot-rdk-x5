@@ -74,7 +74,7 @@ flowchart TB
 | Post-processing | `pose_post_process.cpp` (body boxes + COCO-17 keypoints) |
 | Overlay | OpenCV lines/circles for body skeleton |
 | Encoding | same libx264 C++ path as sources 0/1 |
-| Binary | `/usr/local/vigiclient/vigi-encode-pose` (TROS Python fallback in `.sh`) |
+| Binary | `/usr/local/vigiclient/vigi-encode-pose` |
 
 ### Model Used
 
@@ -91,9 +91,8 @@ Loaded directly via `libdnn` / `spcdev` — no ROS nodes.
 |------|------|
 | `vigi-encode-pose.cpp` | Full C++ pipeline: cam → BPU → draw → libx264 → `:8043` |
 | `pose_post_process.{hpp,cpp}` | Body box + keypoint parsers (no ROS) |
-| `vigi-encode-pose.sh` | Prefers C++ binary; falls back to TROS + Python |
+| `vigi-encode-pose.sh` | Launches the C++ binary |
 | `rebuild-pose-cpp-on-board.sh` | Copy sources + `g++` link on the board |
-| `vigi-encode-pose.py` / `vigi-pose.launch.py` | Legacy TROS fallback only |
 
 ## 5. Operations
 

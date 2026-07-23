@@ -8,9 +8,9 @@ This repository contains the adapted scripts, sample configuration, systemd unit
 
 | Component | Status | Selected solution |
 |-----------|--------|-------------------|
-| Video source 0 (H.264) | OK | Software libx264 (ffmpeg) |
-| Video source 1 (YOLO) | OK | Python + BPU pipeline, stream-first |
-| Video source 2 (pose) | Under validation | TROS mono2d body keypoints + libx264 |
+| Video source 0 (H.264) | OK | Full C++ libx264 |
+| Video source 1 (YOLO) | OK | Full C++ BPU + libx264 |
+| Video source 2 (pose) | OK | Full C++ BPU + libx264 |
 | DC motors | OK | 250 Hz C software PWM + ±15 dead zone |
 | Buzzer | OK | Software PWM through the WiringPi C bridge |
 | Servos | Under validation | Real-time 50 Hz C software PWM, including BCM7 |
@@ -28,9 +28,9 @@ flowchart LR
   end
   subgraph rdk [RDK X5]
     Node[clientrobotpi.js]
-    Enc0[vigi-encode-rdk.py]
-    Enc1[vigi-encode-yolo.py]
-    Enc2[vigi-encode-pose.py]
+    Enc0[vigi-encode-x264]
+    Enc1[vigi-encode-yolo]
+    Enc2[vigi-encode-pose]
     GpioBridge[rdk-gpio-helper C]
     Node -->|"TCP 8043"| Enc0
     Node -->|"TCP 8043"| Enc1

@@ -71,7 +71,7 @@ flowchart TB
 | Post-processing | vendored `yolov5_post_process.cpp` (ParseTensor + NMS) |
 | Overlay | OpenCV `rectangle` / `putText` |
 | Encoding | same libx264 C++ path as source 0 |
-| Binary | `/usr/local/vigiclient/vigi-encode-yolo` (Python fallback in `.sh`) |
+| Binary | `/usr/local/vigiclient/vigi-encode-yolo` |
 
 ### Model Used
 
@@ -138,7 +138,7 @@ camera.open_cam failed
 
 ### Cause
 
-The previous encoder (`vigi-encode-rdk.py` or `vigi-encode-yolo.py`) did not release the CSI interface before the new Diffusion process started.
+The previous encoder did not release the CSI interface before the new Diffusion process started.
 
 ### Workaround
 
@@ -174,9 +174,10 @@ The source-switching procedure is **fragile** and needs to be productionized (pr
 
 | Path | Role |
 |--------|------|
-| `/usr/local/vigiclient/vigi-encode-yolo.py` | YOLO encoder (~416 lines) |
+| `/usr/local/vigiclient/vigi-encode-yolo` | YOLO C++ binary |
+| `/usr/local/vigiclient/vigi-encode-yolo.cpp` | Source |
+| `/usr/local/vigiclient/yolov5_post_process.*` | ParseTensor + NMS |
 | `/usr/local/vigiclient/vigi-encode-yolo.sh` | Shell wrapper |
-| `/usr/local/vigiclient/vigi-encode-yolo.py.rdkcopy` | Backup copy of the RDK encoder |
 
 ---
 
