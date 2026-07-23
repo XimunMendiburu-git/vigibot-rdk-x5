@@ -50,32 +50,28 @@ There is only one physical CSI camera: sources 0 and 1 are **mutually exclusive*
 
 ```mermaid
 flowchart TB
-  Cam[IMX219 get_img NV12 640x480]
-  Bgr[nv12_to_bgr OpenCV]
-  Resize[resize 640x640]
-  Nv12In[bgr2nv12]
-  BPU[pyeasy_dnn forward]
-  Post[libpostprocess Yolov5PostProcess]
-  Draw[cv2 rectangle labels]
-  OutNv12[bgr2nv12]
-  X264[ffmpeg libx264]
+  Cam[IMX219 SP cam NV12 640x480]
+  Pass[stream-first raw frames]
+  Resize[OpenCV resize 640x640 NV12]
+  BPU[sp_bpu_start_predict YOLOv5s_v7]
+  Post[ParseTensor + NMS]
+  Draw[OpenCV rectangle labels]
+  X264[libx264 Constrained Baseline]
   Tcp[TCP 8043]
-  Cam --> Bgr
-  Bgr --> Resize --> Nv12In --> BPU --> Post --> Draw
-  Draw --> OutNv12 --> X264 --> Tcp
-  Cam -.->|"30 frames passthrough"| X264
+  Cam --> Pass --> X264
+  Cam --> Resize --> BPU --> Post --> Draw --> X264 --> Tcp
 ```
 
 ### Components
 
 | Stage | Technology |
 |-------|-------------|
-| Capture | `hobot_vio.libsrcampy.Camera`, `get_img(2, 640, 480)` |
-| Inference | `hobot_dnn.pyeasy_dnn`, NV12 model |
-| Post-processing | `libpostprocess.so` via ctypes (`Yolov5doProcess`, `Yolov5PostProcess`) |
-| Overlay | OpenCV `rectangle`, `putText` |
-| Encoding | Same libx264 pipeline as source 0 |
-| Output | TCP 8043 → Node |
+| Capture | `sp_open_camera_v2` / `sp_vio_get_frame` (same as source 0) |
+| Inference | `sp_init_bpu_module` + `sp_bpu_start_predict` |
+| Post-processing | vendored `yolov5_post_process.cpp` (ParseTensor + NMS) |
+| Overlay | OpenCV `rectangle` / `putText` |
+| Encoding | same libx264 C++ path as source 0 |
+| Binary | `/usr/local/vigiclient/vigi-encode-yolo` (Python fallback in `.sh`) |
 
 ### Model Used
 

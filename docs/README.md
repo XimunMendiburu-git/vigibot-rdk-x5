@@ -9,7 +9,7 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 | [poc-vigibot-rdk-x5.md](./poc-vigibot-rdk-x5.md) | Full POC report (summary, architecture, overview table) |
 | [video-encoding.md](./video-encoding.md) | H.264 encoding: hardware attempts, libx264 software solution |
 | [yolo-source.md](./yolo-source.md) | Second video source with YOLO overlay (BPU) |
-| [pose-source.md](./pose-source.md) | Third video source with body keypoint tracking (TROS) |
+| [pose-source.md](./pose-source.md) | Third video source with body keypoint overlay (C++ BPU) |
 | [gpio-mapping.md](./gpio-mapping.md) | GPIO, PWM, servos, mapping BCM→BOARD |
 | [known-issues.md](./known-issues.md) | Known issues, workarounds, and runbook |
 
@@ -32,8 +32,9 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 ├── robot.json                # Hardware configuration (often pushed by the server)
 ├── vigi-encode-rdk.sh/.py    # Video source 0 encoder
 ├── vigi-encode-yolo.sh/.py   # Video source 1 encoder (YOLO)
-├── vigi-encode-pose.sh/.py   # Video source 2 encoder (body keypoints)
-├── vigi-pose.launch.py       # TROS mono2d body detection launch
+├── vigi-encode-pose          # Video source 2 C++ binary (body keypoints)
+├── vigi-encode-pose.sh/.py   # Wrapper + legacy TROS fallback
+├── vigi-pose.launch.py       # Legacy TROS launch (fallback only)
 ├── rdk-pigpio.js             # GPIO wrapper (native helper, Python fallback)
 ├── rdk-gpio-helper.c         # WiringPi C daemon (BCM→BOARD, PWM, servo)
 ├── rdk-gpio-helper.py        # Legacy fallback Hobot.GPIO daemon
@@ -47,7 +48,7 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 |-------|------|------------------|
 | Video source 0 (H.264) | OK | Software libx264 (ffmpeg) |
 | Video source 1 (YOLO) | OK | Python + BPU pipeline, stream-first |
-| Video source 2 (pose) | Under validation | TROS mono2d body keypoints + libx264 |
+| Video source 2 (pose) | Under validation | Full C++ BPU + libx264 (TROS fallback) |
 | DC motors | OK | WiringPi C soft PWM at 250 Hz + ±15 dead zone |
 | Buzzer | OK | Soft PWM via bridge WiringPi C |
 | Servos | Under validation | Real-time C soft PWM at 50 Hz |

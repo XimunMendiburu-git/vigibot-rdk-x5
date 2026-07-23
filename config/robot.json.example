@@ -27,6 +27,9 @@
       "BITRATE": 900000
     }
   ],
+  "WLANDEVICE": 0,
+  "PLAYBACKDEVICE": 1,
+  "RECORDINGDEVICE": 0,
   "OUTPUTS": [
     {
       "NAME": "Front left wheel",

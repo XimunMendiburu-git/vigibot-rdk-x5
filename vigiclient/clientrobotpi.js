@@ -101,10 +101,16 @@ if(typeof USER.CMDTTS === "undefined")
  USER.CMDTTS = SYS.CMDTTS;
 
 USER.SERVERS.forEach(function(server) {
- sockets[server] = IO.connect(server, {"connect timeout": 1000, transports: ["websocket"], path: "/" + SYS.SECUREMOTEPORT + "/socket.io"});
+ sockets[server] = IO.connect(server, {
+  "connect timeout": 1000,
+  transports: ["websocket"],
+  path: "/" + SYS.SECUREMOTEPORT + "/socket.io",
+  /* Avoid WS compression buffering on the video uplink. */
+  perMessageDeflate: false
+ });
 });
 
-hard.DEBUG = true;
+hard.DEBUG = false;
 hard.TELEDEBUG = false;
 
 trace("Client start", true);
@@ -192,6 +198,33 @@ function constrain(n, nMin, nMax) {
   n = nMin;
 
  return n;
+}
+
+function playbackDevice() {
+ let device = hard.PLAYBACKDEVICE;
+ if(device === undefined || device === null || device === "")
+  return 1;
+ return device;
+}
+
+function recordingDevice() {
+ let device = hard.RECORDINGDEVICE;
+ if(device === undefined || device === null || device === "")
+  return 0;
+ // Official Pi configs often use card 2; RDK X5 exposes cards 0 and 1.
+ if(device === 2)
+  return 0;
+ return device;
+}
+
+function ttsText(data) {
+ if(typeof data === "string")
+  return data;
+ if(data && typeof data.text === "string")
+  return data.text;
+ if(data && data.message)
+  return String(data.message);
+ return String(data);
 }
 
 function sigterm(name, process, callback) {
@@ -311,7 +344,7 @@ function configurationVideo(callback) {
                                                            ).replace(new RegExp("BITRATE", "g"), confVideo.BITRATE
                                                            ).replace(new RegExp("ROTATE", "g"), confVideo.ROTATE
                                                            ).replace(new RegExp("VIDEOLOCALPORT", "g"), SYS.VIDEOLOCALPORT);
- cmdDiffAudio = USER.CMDDIFFAUDIO.join("").replace(new RegExp("RECORDINGDEVICE", "g"), hard.RECORDINGDEVICE
+ cmdDiffAudio = USER.CMDDIFFAUDIO.join("").replace(new RegExp("RECORDINGDEVICE", "g"), recordingDevice()
                                          ).replace(new RegExp("AUDIOLOCALPORT", "g"), SYS.AUDIOLOCALPORT);
 
  trace("Initializing the Video4Linux configuration", false);
@@ -488,6 +521,9 @@ USER.SERVERS.forEach(function(server, index) {
 
    conf = data.conf;
    hard = data.hard;
+   /* Teleop: never flood the uplink / disk with debug traces. */
+   hard.DEBUG = false;
+   hard.TELEDEBUG = false;
 
    tx = new FRAME.Tx(conf.TX);
    rx = new FRAME.Rx(conf.TX, conf.RX);
@@ -609,10 +645,14 @@ USER.SERVERS.forEach(function(server, index) {
  });
 
  sockets[server].on("clientsrobottts", function(data) {
-  FS.writeFile("/tmp/tts.txt", data, function(err) {
-   if(err)
+  let text = ttsText(data);
+  trace("TTS message received", false);
+  FS.writeFile("/tmp/tts.txt", text, function(err) {
+   if(err) {
     trace(err, false);
-   exec("eSpeak", USER.CMDTTS.replace(new RegExp("PLAYBACKDEVICE", "g"), hard.PLAYBACKDEVICE), function() {
+    return;
+   }
+   exec("eSpeak", USER.CMDTTS.replace(new RegExp("PLAYBACKDEVICE", "g"), playbackDevice()), function() {
    });
   });
  });
@@ -1252,22 +1292,181 @@ setInterval(function() {
 NET.createServer(function(socket) {
  const SEPARATEURNALU = new Buffer.from([0, 0, 0, 1]);
  const SPLITTER = new SPLIT(SEPARATEURNALU);
+ let auParts = [];
+ let emitCount = 0;
+ let dropCount = 0;
+ let qMax = 0;
+ let bytesMax = 0;
+ let kqMax = 0;
+ let statsAt = Date.now();
+ let cachedKernelQ = 0;
+ let kernelQAt = 0;
+
+ socket.setNoDelay(true);
+
+ /* Kernel TCP Send-Q to vigibot.com — this is where stable multi-second lag lives. */
+ function uplinkKernelSendQ() {
+  const now = Date.now();
+  if(now - kernelQAt < 400)
+   return cachedKernelQ;
+  kernelQAt = now;
+  try {
+   /* Prefer this process view; only ESTABLISHED (st=01) peers on :443. */
+   const lines = FS.readFileSync("/proc/self/net/tcp", "utf8").split("\n");
+   const needle = "A200175E:01BB";
+   let best = 0;
+   for(let i = 1; i < lines.length; i++) {
+    const cols = lines[i].trim().split(/\s+/);
+    if(cols.length < 5)
+     continue;
+    if(cols[2].toUpperCase() !== needle)
+     continue;
+    if(cols[3] !== "01")
+     continue;
+    const q = parseInt(cols[4].split(":")[0], 16) || 0;
+    if(q > best)
+     best = q;
+   }
+   cachedKernelQ = best;
+   return best;
+  } catch(e) {}
+  cachedKernelQ = 0;
+  return 0;
+ }
+
+ /* Real backlog = socket.io packet count + Node bytes waiting on TLS/TCP to vigibot.com.
+    That TCP Send-Q was holding the "past" (minutes of video) — not the local :8043 pipe. */
+ function uplinkRawSocket(s) {
+  try {
+   const t = s && s.io && s.io.engine && s.io.engine.transport;
+   const ws = t && (t.ws || t.socket);
+   return (ws && (ws._socket || ws)) || null;
+  } catch(e) {
+   return null;
+  }
+ }
+
+ function uplinkBytes(s) {
+  const raw = uplinkRawSocket(s);
+  if(!raw)
+   return 0;
+  /* Prefer TCP socket only — WebSocket.bufferedAmount can be misleading. */
+  const tcp = raw._socket || (raw.socket && raw.socket._socket) || raw;
+  if(tcp && typeof tcp.writableLength === "number")
+   return tcp.writableLength;
+  if(typeof raw.writableLength === "number")
+   return raw.writableLength;
+  if(typeof raw.bufferSize === "number")
+   return raw.bufferSize;
+  return 0;
+ }
+
+ function uplinkQueued(s) {
+  if(!s || !s.connected)
+   return 99;
+  const sendBuf = (s.sendBuffer && s.sendBuffer.length) || 0;
+  const eng = s.io && s.io.engine;
+  const writeBuf = (eng && eng.writeBuffer && eng.writeBuffer.length) || 0;
+  return sendBuf + writeBuf;
+ }
+
+ /* Drop unsent socket.io packets (userspace only). Never destroy the socket —
+    that disconnects the whole robot from Vigibot and looks like a crash/restart. */
+ function purgeOutboundQueues(s) {
+  if(!s)
+   return;
+  if(Array.isArray(s.sendBuffer))
+   s.sendBuffer.length = 0;
+  const eng = s.io && s.io.engine;
+  if(eng && Array.isArray(eng.writeBuffer))
+   eng.writeBuffer.length = 0;
+ }
+
+ function emitVideo(s, payload) {
+  if(typeof s.compress === "function")
+   s.compress(false).emit("serveurrobotvideo", payload);
+  else
+   s.emit("serveurrobotvideo", payload);
+ }
+
+ function flushStats() {
+  const now = Date.now();
+  const dt = (now - statsAt) / 1000;
+  if(dt < 2)
+   return;
+  console.error("VIDEO_STATS emit_fps=" + (emitCount / dt).toFixed(1) +
+                " drop_fps=" + (dropCount / dt).toFixed(1) +
+                " q_max=" + qMax +
+                " bytes_max=" + bytesMax +
+                " kq_max=" + kqMax);
+  emitCount = 0;
+  dropCount = 0;
+  qMax = 0;
+  bytesMax = 0;
+  kqMax = 0;
+  statsAt = now;
+ }
 
  trace("H.264 video streaming process is connected to tcp://127.0.0.1:" + SYS.VIDEOLOCALPORT, false);
 
  SPLITTER.on("data", function(data) {
 
- if(currentServer) {
-  // if(latencyAlarm)
-  //  data = new Buffer.from([]);
-  console.error("VIDEO NAL len=" + data.length + " alarm=" + latencyAlarm + " server=" + currentServer);
-  sockets[currentServer].emit("serveurrobotvideo", {
-   timestamp: Date.now(),
-   data: data
-  });
- } else {
-   console.error("VIDEO DROP no currentServer len=" + data.length);
+ if(!currentServer) {
+  auParts = [];
+  return;
  }
+
+ const s = sockets[currentServer];
+ if(!s || !s.connected) {
+  auParts = [];
+  return;
+ }
+
+ const nalType = data.length ? (data[0] & 0x1f) : 0;
+ auParts.push(data);
+ if(nalType !== 1 && nalType !== 5)
+  return;
+
+ const isIdr = nalType === 5;
+ const q = uplinkQueued(s);
+ const bytes = uplinkBytes(s);
+ const kq = uplinkKernelSendQ();
+ if(q > qMax)
+  qMax = q;
+ if(bytes > bytesMax)
+  bytesMax = bytes;
+ if(kq > kqMax)
+  kqMax = kq;
+
+ /* Never reconnect/destroy — only drop frames + purge userspace queues. */
+ if(bytes > 24 * 1024 || q > 3 || kq > 96 * 1024)
+  purgeOutboundQueues(s);
+
+ /* Normal BDP on this lossy FR uplink sits ~50-70KB — only cut above that. */
+ if(!isIdr && (bytes > 12 * 1024 || q > 1 || kq > 80 * 1024)) {
+  dropCount++;
+  auParts = [];
+  flushStats();
+  return;
+ }
+
+ if(isIdr && (bytes > 48 * 1024 || q > 3 || kq > 120 * 1024)) {
+  dropCount++;
+  auParts = [];
+  flushStats();
+  return;
+ }
+
+ const ts = Date.now();
+ for(let i = 0; i < auParts.length; i++) {
+  emitVideo(s, {
+   timestamp: ts,
+   data: auParts[i]
+  });
+ }
+ auParts = [];
+ emitCount++;
+ flushStats();
 
  }).on("error", function(err) {
   trace("Error when splitting input stream into H.264 network abstraction layer units", false);
@@ -1276,6 +1475,7 @@ NET.createServer(function(socket) {
  socket.pipe(SPLITTER);
 
  socket.on("end", function() {
+  auParts = [];
   trace("H.264 video streaming process is disconnected from tcp://127.0.0.1:" + SYS.VIDEOLOCALPORT, false);
  });
 
@@ -1294,12 +1494,22 @@ NET.createServer(function(socket) {
 
   if(i == 20) {
    if(currentServer) {
-    //if(latencyAlarm)
-     //array = [];
-    sockets[currentServer].emit("serveurrobotaudio", {
-     timestamp: Date.now(),
-     data: Buffer.concat(array)
-    });
+    const s = sockets[currentServer];
+    let audioBytes = 0;
+    try {
+     const t = s && s.io && s.io.engine && s.io.engine.transport;
+     const ws = t && (t.ws || t.socket);
+     const raw = ws && (ws._socket || ws);
+     if(raw && typeof raw.writableLength === "number")
+      audioBytes = raw.writableLength;
+    } catch(e) {}
+    /* Do not pile audio on top of a congested video uplink. */
+    if(audioBytes < 8 * 1024) {
+     s.emit("serveurrobotaudio", {
+      timestamp: Date.now(),
+      data: Buffer.concat(array)
+     });
+    }
    }
    array = [];
    i = 0;

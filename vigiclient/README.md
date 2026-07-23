@@ -6,8 +6,9 @@ Scripts deployed to `/usr/local/vigiclient/` by `install/install.sh`.
 |------|---------|
 | `vigi-encode-rdk.py` / `.sh` | Video source 0 (raw camera feed, libx264) |
 | `vigi-encode-yolo.py` / `.sh` | Video source 1 (YOLO BPU overlay) |
-| `vigi-encode-pose.py` / `.sh` | Video source 2 (body keypoint overlay via TROS) |
-| `vigi-pose.launch.py` | Minimal TROS launch for mono2d body detection |
+| `vigi-encode-pose.cpp` / binary / `.sh` | Video source 2 (body keypoints, full C++) |
+| `pose_post_process.{hpp,cpp}` | Body box + keypoint parsers for the BPU model |
+| `vigi-encode-pose.py` / `vigi-pose.launch.py` | Legacy TROS fallback only |
 | `rdk-pigpio.js` | pigpio-like API → native helper, with Python fallback |
 | `rdk-gpio-helper.c` | WiringPi C daemon source (BCM→BOARD, real-time software PWM) |
 | `rdk-gpio-helper` | Binary compiled on the RDK by the installer |
