@@ -131,18 +131,25 @@ Unstable position holding, with audible/visible vibration at rest.
 
 ### Cause
 
-Legacy Python backend: non-real-time userspace soft PWM.
+Soft PWM in userspace: (1) Node re-sends servo pulses every `SERVORATE` ms with
+micro stick noise; (2) `nanosleep` overshoot under video/BPU load widens the
+pulse width by tens of µs.
 
-### Options
+### Mitigation (current)
 
-| Option | Action |
-|--------|--------|
-| Accept | Tolerate it for basic teleoperation |
-| Disable at rest | Pulse 0 (floating)—no jitter, but no holding torque |
-| **Current** | WiringPi C helper with `SCHED_FIFO` threads, validation in progress |
-| Long term | Add a PCA9685 module (I2C) |
+[`rdk-gpio-helper.c`](../vigiclient/rdk-gpio-helper.c) soft PWM 50 Hz with
+`SCHED_FIFO`:
 
-Do not enable PWM0/PWM1 with a custom overlay: this test disabled Wi-Fi on the reference robot. See [gpio-mapping.md](./gpio-mapping.md).
+| Guard | Value | Effect |
+|-------|-------|--------|
+| Quantization | 40 µs | Snap noisy updates to a grid |
+| Hysteresis | 80 µs | Ignore tiny updates (except pulse 0) |
+| Busy-wait high phase | full pulse (≤2.5 ms) | Accurate pulse width under video/BPU load |
+| mlockall + FIFO 80 | — | Fewer page faults / preemption mid-pulse |
+
+Hardware PWM0/PWM1 overlays remain **disabled** (Wi-Fi conflict on the
+reference robot). Long-term option: PCA9685 on I2C. See
+[gpio-mapping.md](./gpio-mapping.md).
 
 ---
 
@@ -223,7 +230,7 @@ for b in 0 2 3 4 5 6 7 8; do echo "=== bus $b ==="; i2cdetect -y -r $b 2>/dev/nu
 | Issue | Priority | Approach |
 |-------|----------|-------|
 | Hardware encoder incompatible with browser | Medium | Analyze NAL slices, WebCodecs |
-| Servos jitter at rest | High | X5 hardware PWM or PCA9685 |
+| Servos jitter at rest | Medium | Soft PWM + hyst/quantize/busy-wait; PCA9685 long-term |
 | PWM0/PWM1 overlay disables Wi-Fi | Critical | Do not deploy; analyze pinmux outside production |
 | Fragile CSI source switching | Medium | Guaranteed cleanup, encoder watchdog |
 | Latency failsafe disabled | High | Reimplement timestamp guard |

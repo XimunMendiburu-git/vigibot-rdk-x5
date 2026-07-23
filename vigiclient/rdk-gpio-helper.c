@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -24,6 +25,11 @@
 #define SERVO_PERIOD_NS (1000000000L / SERVO_HZ)
 #define MAX_SOFT_CHANNELS 32
 #define MAX_SERVO_EVENTS (MAX_SOFT_CHANNELS * 2)
+/* Dampen stick noise / Node spam harder than the old Python defaults. */
+#define SERVO_HYST_US 80
+#define SERVO_QUANTUM_US 40
+/* Busy-wait the whole high phase for accurate pulse width under load. */
+#define SERVO_BUSY_NS 2500000L
 
 typedef enum {
     SOFT_NONE = 0,
@@ -132,10 +138,51 @@ static void sleep_until(const struct timespec *deadline)
     }
 }
 
+/*
+ * Sleep until shortly before the deadline, then spin for the last busy window.
+ * Improves falling-edge accuracy under video/BPU load vs pure nanosleep.
+ */
+static void sleep_until_edge(const struct timespec *deadline, long busy_ns)
+{
+    struct timespec now;
+    struct timespec soft = *deadline;
+
+    if (busy_ns > 0) {
+        soft.tv_nsec -= busy_ns;
+        while (soft.tv_nsec < 0) {
+            soft.tv_nsec += 1000000000L;
+            soft.tv_sec--;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec < soft.tv_sec ||
+            (now.tv_sec == soft.tv_sec && now.tv_nsec < soft.tv_nsec)) {
+            sleep_until(&soft);
+        }
+    }
+
+    while (!stopping) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec > deadline->tv_sec ||
+            (now.tv_sec == deadline->tv_sec &&
+             now.tv_nsec >= deadline->tv_nsec)) {
+            break;
+        }
+    }
+}
+
 static void set_realtime_priority(int priority)
 {
     struct sched_param param = {.sched_priority = priority};
     pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+}
+
+static int quantize_servo_us(int pulse_us)
+{
+    if (pulse_us <= 0) {
+        return 0;
+    }
+    return ((pulse_us + SERVO_QUANTUM_US / 2) / SERVO_QUANTUM_US) *
+           SERVO_QUANTUM_US;
 }
 
 static struct timespec offset_from(struct timespec base, long ns)
@@ -158,15 +205,16 @@ static void *servo_loop(void *arg)
     struct timespec cycle;
     (void)arg;
 
-    set_realtime_priority(70);
+    set_realtime_priority(80);
+    /* Avoid page faults mid-pulse when video/BPU thrash memory. */
+    mlockall(MCL_CURRENT | MCL_FUTURE);
     clock_gettime(CLOCK_MONOTONIC, &cycle);
 
     while (!stopping) {
-        servo_event_t events[MAX_SERVO_EVENTS];
         soft_channel_t *servos[MAX_SOFT_CHANNELS];
         int values[MAX_SOFT_CHANNELS];
         int servo_count = 0;
-        int event_count = 0;
+        struct timespec cursor;
 
         pthread_mutex_lock(&channels_lock);
         for (int i = 0; i < soft_count; i++) {
@@ -181,9 +229,15 @@ static void *servo_loop(void *arg)
         }
         pthread_mutex_unlock(&channels_lock);
 
-        for (int i = 0; i < servo_count; i++) {
+        /*
+         * Emit pulses sequentially with a full busy-wait on the high phase.
+         * Absolute multi-deadline schedules lose pulse width under load when
+         * the rising edge wakes late from nanosleep; width is what servos track.
+         */
+        cursor = cycle;
+        for (int i = 0; i < servo_count && !stopping; i++) {
             int pulse_us = values[i];
-            long phase_ns = SERVO_PERIOD_NS * i / servo_count;
+            struct timespec falling;
 
             pulse_us = pulse_us < 0 ? 0 : pulse_us;
             pulse_us = pulse_us > 2500 ? 2500 : pulse_us;
@@ -191,23 +245,20 @@ static void *servo_loop(void *arg)
                 digitalWrite(servos[i]->physical, LOW);
                 continue;
             }
-            events[event_count++] = (servo_event_t){
-                .offset_ns = phase_ns,
-                .physical = servos[i]->physical,
-                .level = HIGH,
-            };
-            events[event_count++] = (servo_event_t){
-                .offset_ns = phase_ns + (long)pulse_us * 1000L,
-                .physical = servos[i]->physical,
-                .level = LOW,
-            };
-        }
 
-        qsort(events, event_count, sizeof(events[0]), compare_servo_events);
-        for (int i = 0; i < event_count && !stopping; i++) {
-            struct timespec deadline = offset_from(cycle, events[i].offset_ns);
-            sleep_until(&deadline);
-            digitalWrite(events[i].physical, events[i].level);
+            /* Stagger starts across the 20 ms frame to spread current draw. */
+            if (servo_count > 1) {
+                cursor = offset_from(cycle, SERVO_PERIOD_NS * i / servo_count);
+                sleep_until(&cursor);
+            }
+
+            digitalWrite(servos[i]->physical, HIGH);
+            falling = cursor;
+            add_ns(&falling, (long)pulse_us * 1000L);
+            /* Busy-wait the entire high window (capped by SERVO_BUSY_NS). */
+            sleep_until_edge(&falling, SERVO_BUSY_NS);
+            digitalWrite(servos[i]->physical, LOW);
+            cursor = falling;
         }
 
         add_ns(&cycle, SERVO_PERIOD_NS);
@@ -615,9 +666,11 @@ static int set_servo(int bcm, int pulse_us)
 {
     int group;
     int channel;
+    int cur;
 
     pulse_us = pulse_us < 0 ? 0 : pulse_us;
     pulse_us = pulse_us > 2500 ? 2500 : pulse_us;
+    pulse_us = quantize_servo_us(pulse_us);
 
     if (hardware_route(bcm, &group, &channel)) {
         hardware_channel_t *hw = get_hardware(bcm);
@@ -632,6 +685,12 @@ static int set_servo(int bcm, int pulse_us)
     soft_channel_t *ch = get_soft_channel(bcm, SOFT_SERVO);
     if (!ch) return -1;
     pthread_mutex_lock(&ch->lock);
+    cur = ch->value;
+    /* Always accept pulse=0 (release). Ignore tiny stick/noise updates. */
+    if (pulse_us != 0 && cur != 0 && abs(pulse_us - cur) < SERVO_HYST_US) {
+        pthread_mutex_unlock(&ch->lock);
+        return 0;
+    }
     ch->value = pulse_us;
     pthread_mutex_unlock(&ch->lock);
     return 0;
@@ -688,8 +747,10 @@ int main(void)
     hardware_pwm_enabled =
         hardware_env != NULL && strcmp(hardware_env, "1") == 0;
 
-    printf("rdk-gpio-helper ready backend=wiringpi-c hardware-pwm=%s\n",
-           hardware_pwm_enabled ? "on" : "off");
+    printf("rdk-gpio-helper ready backend=wiringpi-c hardware-pwm=%s "
+           "servo hyst=%d q=%d busy_us=%ld\n",
+           hardware_pwm_enabled ? "on" : "off", SERVO_HYST_US,
+           SERVO_QUANTUM_US, SERVO_BUSY_NS / 1000L);
 
     while (!stopping && fgets(line, sizeof(line), stdin)) {
         char command[16];

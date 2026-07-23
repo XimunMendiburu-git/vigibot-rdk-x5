@@ -52,7 +52,7 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 | Video source 2 (pose) | OK | Full C++ BPU + libx264 |
 | DC motors | OK | WiringPi C soft PWM at 250 Hz + ±15 dead zone |
 | Buzzer | OK | Soft PWM via bridge WiringPi C |
-| Servos | Under validation | Real-time C soft PWM at 50 Hz |
+| Servos | Mitigated | C soft PWM 50 Hz + hyst/quantize + busy-wait |
 | IR illuminators | Under validation | WiringPi on BOARD21; kernel GPIO357 on BOARD33 |
 | Hardware H.264 encoder | Abandoned | Incompatible with browser decoder |
 | PCA9685 | Unavailable | No physical module on the robot |

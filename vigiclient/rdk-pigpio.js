@@ -51,8 +51,15 @@ Gpio.prototype.pwmWrite = function (value) {
   send("pwm " + this.pin + " " + (value | 0));
 };
 Gpio.prototype.pwmFrequency = function () {};
+Gpio.prototype._lastServoUs = -1;
 Gpio.prototype.servoWrite = function (pulseWidth) {
-  send("servo " + this.pin + " " + (pulseWidth | 0));
+  const us = pulseWidth | 0;
+  /* Drop identical refreshes; helper also applies hysteresis for near values. */
+  if (us === this._lastServoUs) {
+    return;
+  }
+  this._lastServoUs = us;
+  send("servo " + this.pin + " " + us);
 };
 
 module.exports = { Gpio, OUTPUT: 1, INPUT: 0 };

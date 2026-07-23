@@ -124,9 +124,12 @@ Driven through `pwmWrite` → soft PWM. Validated.
 | WiringPi C helper + `SCHED_FIFO` | Deployed; clear improvement observed |
 | Single servo thread + phase-shifted pulses | Deployed to reduce jitter and simultaneous current draw |
 
-The C helper uses an absolute monotonic clock and a single real-time thread. Servo pulses are distributed across the 20 ms period to prevent multiple servos from drawing current at the same time. BCM7/BOARD26, which has no hardware PWM, uses the same C soft PWM engine as the other servos.
-
-Stability still needs to be validated under video load with all four servos active.
+The C helper uses an absolute monotonic clock and a single real-time thread.
+Servo pulses are emitted sequentially within each 20 ms frame (spread current
+draw). Each high phase is busy-waited for accurate width under video/BPU load;
+consigne updates are quantized (40 µs) with 80 µs hysteresis. Node also skips
+identical consecutive `servoWrite` values. BCM7/BOARD26 uses the same soft PWM
+engine.
 
 ### IR (`Gpios`) — bridge validated
 
@@ -214,7 +217,7 @@ Enabling PWM **disables** the multiplexed function on those pins.
 |---------------|-------------|
 | Persistent C bridge | External process to monitor; Python fallback retained |
 | Motor soft PWM | Best-effort real time; active load remains to be measured |
-| Servo soft PWM | More deterministic than Python; mechanical validation required |
+| Servo soft PWM | Quantize + hysteresis + busy-wait falling edge; residual tremor possible under heavy load |
 | BCM configuration + translation | Mapping must be maintained; risk of error if wiring differs from Pi |
 | I2C/PCA stubs retained | INA219 / PCA not functional on the Vigibot side |
 | PWM0/PWM1 overlay | Observed Wi-Fi conflict; prohibited in the installation |
