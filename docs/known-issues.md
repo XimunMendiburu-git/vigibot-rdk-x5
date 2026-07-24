@@ -123,33 +123,52 @@ Check that stick trim is set to 0 on the Vigibot remote control.
 
 ---
 
-## 5. Servos jitter at rest
+## 5. Servos jitter / overheating / residual twitch
 
 ### Symptoms
 
-Unstable position holding, with audible/visible vibration at rest.
+- Unstable position holding or small artefacts at rest (especially after a move).
+- After a long session, some servos become hot even when not commanded.
 
-### Cause
+### Causes
 
-Soft PWM in userspace: (1) Node re-sends servo pulses every `SERVORATE` ms with
-micro stick noise; (2) `nanosleep` overshoot under video/BPU load widens the
-pulse width by tens of µs.
+1. Soft PWM on the SoC cannot match a dedicated servo driver (width jitter under load).
+2. Holding against gravity / mechanical bind.
+3. `BACKSLASH > 0` plus stick noise can flip compensation every `SERVORATE`.
+4. **Servo sensitivity differs by model** — validated by swapping head ↔ gripper wiring: artefacts stay with the head servos, not with the GPIO mapping.
 
-### Mitigation (current)
+### Mitigation (accepted software baseline)
 
-[`rdk-gpio-helper.c`](../vigiclient/rdk-gpio-helper.c) soft PWM 50 Hz with
-`SCHED_FIFO`:
+[`rdk-gpio-helper.c`](../vigiclient/rdk-gpio-helper.c) + [`rdk-pigpio.js`](../vigiclient/rdk-pigpio.js):
 
-| Guard | Value | Effect |
-|-------|-------|--------|
-| Quantization | 40 µs | Snap noisy updates to a grid |
-| Hysteresis | 80 µs | Ignore tiny updates (except pulse 0) |
-| Busy-wait high phase | full pulse (≤2.5 ms) | Accurate pulse width under video/BPU load |
-| mlockall + FIFO 80 | — | Fewer page faults / preemption mid-pulse |
+| Guard | Default | Effect |
+|-------|---------|--------|
+| Pulse timing | rising-edge busy-wait | Stable width vs absolute deadlines |
+| Quantization | 40 µs | Pulse grid |
+| Hysteresis (target) | 60 µs | Ignore tiny stick noise |
+| Max velocity | 40 µs / 20 ms | Slew limit |
+| Max acceleration | 2 µs / frame² | Soft trapezoid |
+| Hold-lock | 200 µs break / 10 frames | Freeze after settle; ignore micro-noise |
+| Node skip | 100 µs | Fewer stdin spam updates |
 
-Hardware PWM0/PWM1 overlays remain **disabled** (Wi-Fi conflict on the
-reference robot). Long-term option: PCA9685 on I2C. See
-[gpio-mapping.md](./gpio-mapping.md).
+Do **not** stack more aggressive software filters without A/B testing — several attempts (per-servo threads, larger hold-break, snap-lock) made motion worse.
+
+Environment overrides (optional):
+
+```bash
+VIGI_SERVO_MAX_VEL_US=20
+VIGI_SERVO_MAX_ACCEL_US=1
+VIGI_SERVO_HOLD_BREAK_US=200
+VIGI_SERVO_HYST_US=60
+```
+
+### What to check / next hardware options
+
+- Set **BACKSLASH = 0** on Servos in Vigibot Hardware config.
+- Prefer quieter / less twitchy servos on the turret if artefacts remain.
+- Long-term: **PCA9685** (`ADRESSE = 0`) or clean HW PWM without breaking Wi-Fi.
+
+Hardware PWM0/PWM1 overlays remain **disabled** (Wi-Fi conflict). See [gpio-mapping.md](./gpio-mapping.md).
 
 ---
 

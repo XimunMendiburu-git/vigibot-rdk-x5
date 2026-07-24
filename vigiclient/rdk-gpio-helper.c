@@ -25,10 +25,13 @@
 #define SERVO_PERIOD_NS (1000000000L / SERVO_HZ)
 #define MAX_SOFT_CHANNELS 32
 #define MAX_SERVO_EVENTS (MAX_SOFT_CHANNELS * 2)
-/* Dampen stick noise / Node spam harder than the old Python defaults. */
-#define SERVO_HYST_US 80
-#define SERVO_QUANTUM_US 40
-/* Busy-wait the whole high phase for accurate pulse width under load. */
+/* Defaults from the last "better" build — no extra anti-artifact features. */
+#define SERVO_HYST_US_DEFAULT 60
+#define SERVO_QUANTUM_US_DEFAULT 40
+#define SERVO_MAX_VEL_US_DEFAULT 40
+#define SERVO_MAX_ACCEL_US_DEFAULT 2
+#define SERVO_HOLD_BREAK_US_DEFAULT 200
+#define SERVO_HOLD_FRAMES_DEFAULT 10
 #define SERVO_BUSY_NS 2500000L
 
 typedef enum {
@@ -41,11 +44,27 @@ typedef struct {
     int bcm;
     int physical;
     soft_mode_t mode;
-    int value;
+    int value;               /* pulse currently emitted (µs) */
+    int target;              /* commanded pulse (µs) */
+    int vel_us;              /* signed slew speed (µs per frame) */
+    int hold_us;             /* frozen pulse while hold_locked */
+    int settled_frames;      /* consecutive settled frames */
+    bool hold_locked;        /* ignore small target noise after settle */
+    long period_ns;          /* motor soft-PWM period (pwmFrequency) */
+    int64_t last_change_ns;  /* monotonic ns of last accepted target update */
     bool running;
     pthread_t thread;
     pthread_mutex_t lock;
 } soft_channel_t;
+
+static int servo_hyst_us = SERVO_HYST_US_DEFAULT;
+static int servo_quantum_us = SERVO_QUANTUM_US_DEFAULT;
+static int servo_max_vel_us = SERVO_MAX_VEL_US_DEFAULT;
+static int servo_max_accel_us = SERVO_MAX_ACCEL_US_DEFAULT;
+static int servo_hold_break_us = SERVO_HOLD_BREAK_US_DEFAULT;
+static int servo_hold_frames = SERVO_HOLD_FRAMES_DEFAULT;
+/* 0 = keep driving 50 Hz forever; >0 = stop pulses after idle (servo goes limp). */
+static int servo_idle_detach_ms = 0;
 
 typedef struct {
     int bcm;
@@ -71,6 +90,7 @@ static pthread_t servo_thread;
 static bool servo_thread_running = false;
 static pthread_mutex_t channels_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool left_ir_prepared = false;
+static unsigned servo_glitch_count = 0;
 
 /*
  * Official Vigibot Raspberry Pi BCM numbering mapped to the physical RDK X5
@@ -181,8 +201,15 @@ static int quantize_servo_us(int pulse_us)
     if (pulse_us <= 0) {
         return 0;
     }
-    return ((pulse_us + SERVO_QUANTUM_US / 2) / SERVO_QUANTUM_US) *
-           SERVO_QUANTUM_US;
+    return ((pulse_us + servo_quantum_us / 2) / servo_quantum_us) *
+           servo_quantum_us;
+}
+
+static int64_t mono_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
 static struct timespec offset_from(struct timespec base, long ns)
@@ -200,13 +227,154 @@ static int compare_servo_events(const void *left, const void *right)
     return a->level - b->level;
 }
 
+static int servo_step_toward_target(soft_channel_t *ch)
+{
+    int target;
+    int value;
+    int vel;
+    int err;
+    int desired_vel;
+    int max_vel = servo_max_vel_us;
+    int max_accel = servo_max_accel_us;
+
+    if (max_vel < 1) {
+        max_vel = 1;
+    }
+    if (max_accel < 1) {
+        max_accel = 1;
+    }
+
+    /* Hold-lock: freeze emitted pulse; ignore micro-noise on target. */
+    if (ch->hold_locked) {
+        ch->value = ch->hold_us;
+        ch->vel_us = 0;
+        ch->target = ch->hold_us;
+        return ch->hold_us;
+    }
+
+    target = ch->target;
+    value = ch->value;
+    vel = ch->vel_us;
+
+    /* Immediate release / disable. */
+    if (target <= 0) {
+        ch->value = 0;
+        ch->vel_us = 0;
+        ch->settled_frames = 0;
+        ch->hold_locked = false;
+        return 0;
+    }
+
+    /* First command: snap (no hold yet — lock only after true settle). */
+    if (value <= 0) {
+        ch->value = target;
+        ch->vel_us = 0;
+        ch->settled_frames = 0;
+        return target;
+    }
+
+    err = target - value;
+    if (err == 0) {
+        ch->vel_us = 0;
+        if (ch->settled_frames < 1000000) {
+            ch->settled_frames++;
+        }
+        if (ch->settled_frames >= servo_hold_frames) {
+            ch->hold_locked = true;
+            ch->hold_us = value;
+            ch->target = value;
+        }
+        return value;
+    }
+
+    ch->settled_frames = 0;
+
+    /* Desired velocity: close the gap, capped. */
+    desired_vel = err;
+    if (desired_vel > max_vel) {
+        desired_vel = max_vel;
+    } else if (desired_vel < -max_vel) {
+        desired_vel = -max_vel;
+    }
+
+    /* Accelerate / decelerate toward desired_vel. */
+    if (desired_vel > vel) {
+        vel += max_accel;
+        if (vel > desired_vel) {
+            vel = desired_vel;
+        }
+    } else if (desired_vel < vel) {
+        vel -= max_accel;
+        if (vel < desired_vel) {
+            vel = desired_vel;
+        }
+    }
+
+    /* Do not overshoot the target in one frame. */
+    if (err > 0 && vel > err) {
+        vel = err;
+    } else if (err < 0 && vel < err) {
+        vel = err;
+    }
+
+    value += vel;
+    if (value < 500 && target >= 500) {
+        value = 500;
+    }
+    if (value > 2500) {
+        value = 2500;
+    }
+
+    ch->value = value;
+    ch->vel_us = vel;
+    return value;
+}
+
+/*
+ * Drive one servo pulse with width measured from the ACTUAL rising edge.
+ * Absolute "cursor + pulse" deadlines stretch/shorten the pulse when the frame
+ * wakes late — that looks like uncommanded jerks with a fixed target.
+ */
+static void emit_servo_pulse(int physical, int pulse_us)
+{
+    int64_t t0;
+    int64_t tend;
+    int64_t t;
+    int64_t width_ns;
+    int64_t overshoot_ns;
+
+    pulse_us = pulse_us < 500 ? 500 : pulse_us;
+    pulse_us = pulse_us > 2500 ? 2500 : pulse_us;
+    width_ns = (int64_t)pulse_us * 1000LL;
+
+    digitalWrite(physical, HIGH);
+    t0 = mono_ns();
+    tend = t0 + width_ns;
+
+    do {
+        t = mono_ns();
+    } while (!stopping && t < tend);
+
+    digitalWrite(physical, LOW);
+
+    overshoot_ns = mono_ns() - tend;
+    if (overshoot_ns > 100000LL) { /* >100 µs late falling edge */
+        servo_glitch_count++;
+        if ((servo_glitch_count % 25u) == 1u) {
+            fprintf(stderr,
+                    "servo pulse glitch phys=%d want=%dus overshoot=%lldus count=%u\n",
+                    physical, pulse_us, (long long)(overshoot_ns / 1000LL),
+                    servo_glitch_count);
+        }
+    }
+}
+
 static void *servo_loop(void *arg)
 {
     struct timespec cycle;
     (void)arg;
 
     set_realtime_priority(80);
-    /* Avoid page faults mid-pulse when video/BPU thrash memory. */
     mlockall(MCL_CURRENT | MCL_FUTURE);
     clock_gettime(CLOCK_MONOTONIC, &cycle);
 
@@ -214,62 +382,62 @@ static void *servo_loop(void *arg)
         soft_channel_t *servos[MAX_SOFT_CHANNELS];
         int values[MAX_SOFT_CHANNELS];
         int servo_count = 0;
-        struct timespec cursor;
 
         pthread_mutex_lock(&channels_lock);
         for (int i = 0; i < soft_count; i++) {
             soft_channel_t *ch = &soft_channels[i];
+            int pulse;
+            int64_t last_change;
+            int settled = 0;
             if (ch->mode != SOFT_SERVO) {
                 continue;
             }
             pthread_mutex_lock(&ch->lock);
-            values[servo_count] = ch->value;
+            pulse = servo_step_toward_target(ch);
+            last_change = ch->last_change_ns;
+            settled = (ch->target == ch->value && ch->vel_us == 0 &&
+                       ch->target > 0);
             pthread_mutex_unlock(&ch->lock);
+            if (servo_idle_detach_ms > 0 && settled) {
+                int64_t idle_ns =
+                    (int64_t)servo_idle_detach_ms * 1000000LL;
+                if (mono_ns() - last_change >= idle_ns) {
+                    pulse = 0;
+                }
+            }
+            values[servo_count] = pulse;
             servos[servo_count++] = ch;
         }
         pthread_mutex_unlock(&channels_lock);
 
-        /*
-         * Emit pulses sequentially with a full busy-wait on the high phase.
-         * Absolute multi-deadline schedules lose pulse width under load when
-         * the rising edge wakes late from nanosleep; width is what servos track.
-         */
-        cursor = cycle;
         for (int i = 0; i < servo_count && !stopping; i++) {
             int pulse_us = values[i];
-            struct timespec falling;
+            struct timespec slot;
 
-            pulse_us = pulse_us < 0 ? 0 : pulse_us;
-            pulse_us = pulse_us > 2500 ? 2500 : pulse_us;
-            if (pulse_us == 0) {
+            if (pulse_us <= 0) {
                 digitalWrite(servos[i]->physical, LOW);
                 continue;
             }
 
-            /* Stagger starts across the 20 ms frame to spread current draw. */
             if (servo_count > 1) {
-                cursor = offset_from(cycle, SERVO_PERIOD_NS * i / servo_count);
-                sleep_until(&cursor);
+                slot = offset_from(cycle, SERVO_PERIOD_NS * i / servo_count);
+                sleep_until(&slot);
             }
 
-            digitalWrite(servos[i]->physical, HIGH);
-            falling = cursor;
-            add_ns(&falling, (long)pulse_us * 1000L);
-            /* Busy-wait the entire high window (capped by SERVO_BUSY_NS). */
-            sleep_until_edge(&falling, SERVO_BUSY_NS);
-            digitalWrite(servos[i]->physical, LOW);
-            cursor = falling;
+            emit_servo_pulse(servos[i]->physical, pulse_us);
         }
 
         add_ns(&cycle, SERVO_PERIOD_NS);
         sleep_until(&cycle);
 
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (now.tv_sec > cycle.tv_sec ||
-            (now.tv_sec == cycle.tv_sec &&
-             now.tv_nsec > cycle.tv_nsec + SERVO_PERIOD_NS)) {
-            cycle = now;
+        {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            while (now.tv_sec > cycle.tv_sec ||
+                   (now.tv_sec == cycle.tv_sec &&
+                    now.tv_nsec > cycle.tv_nsec + SERVO_PERIOD_NS)) {
+                add_ns(&cycle, SERVO_PERIOD_NS);
+            }
         }
     }
 
@@ -300,9 +468,9 @@ static void *soft_loop(void *arg)
         pthread_mutex_lock(&ch->lock);
         value = ch->value;
         mode = ch->mode;
+        period_ns = ch->period_ns > 0 ? ch->period_ns : MOTOR_PERIOD_NS;
         pthread_mutex_unlock(&ch->lock);
 
-        period_ns = MOTOR_PERIOD_NS;
         add_ns(&cycle, period_ns);
 
         value = value < 0 ? 0 : value;
@@ -371,6 +539,14 @@ static soft_channel_t *get_soft_channel(int bcm, soft_mode_t mode)
     ch->bcm = bcm;
     ch->physical = physical;
     ch->mode = mode;
+    ch->value = 0;
+    ch->target = 0;
+    ch->vel_us = 0;
+    ch->hold_us = 0;
+    ch->settled_frames = 0;
+    ch->hold_locked = false;
+    ch->period_ns = MOTOR_PERIOD_NS;
+    ch->last_change_ns = mono_ns();
     pthread_mutex_init(&ch->lock, NULL);
     pinMode(physical, OUTPUT);
     digitalWrite(physical, LOW);
@@ -650,8 +826,8 @@ static int set_pwm(int bcm, int duty)
     if (hardware_route(bcm, &group, &channel)) {
         hardware_channel_t *hw = get_hardware(bcm);
         if (!hw) return -1;
-        return hardware_enable(hw, MOTOR_PERIOD_NS,
-                               MOTOR_PERIOD_NS * (long)duty / 255L);
+        long period = hw->period_ns > 0 ? hw->period_ns : MOTOR_PERIOD_NS;
+        return hardware_enable(hw, period, period * (long)duty / 255L);
     }
 
     soft_channel_t *ch = get_soft_channel(bcm, SOFT_MOTOR);
@@ -662,11 +838,90 @@ static int set_pwm(int bcm, int duty)
     return 0;
 }
 
+static int set_freq(int bcm, int hz)
+{
+    int group;
+    int channel;
+    long period_ns;
+
+    if (hz < 1) {
+        hz = 1;
+    }
+    if (hz > 20000) {
+        hz = 20000;
+    }
+    period_ns = 1000000000L / hz;
+
+    if (hardware_route(bcm, &group, &channel)) {
+        hardware_channel_t *hw = get_hardware(bcm);
+        if (!hw) return -1;
+        hw->period_ns = period_ns;
+        if (hw->enabled) {
+            long high = hw->period_ns; /* keep prior duty roughly full if unknown */
+            (void)high;
+            /* Re-apply with new period at 0 duty until next pwmWrite. */
+            return hardware_enable(hw, period_ns, 0);
+        }
+        return 0;
+    }
+
+    soft_channel_t *ch = get_soft_channel(bcm, SOFT_MOTOR);
+    if (!ch) return -1;
+    pthread_mutex_lock(&ch->lock);
+    ch->period_ns = period_ns;
+    pthread_mutex_unlock(&ch->lock);
+    return 0;
+}
+
+static int set_mode(int bcm, int input)
+{
+    int physical = bcm_to_physical(bcm);
+
+    if (bcm == 13) {
+        /* Left IR via sysfs only supports driven output. */
+        return input ? -1 : 0;
+    }
+    if (physical < 0) {
+        return -1;
+    }
+
+    if (input) {
+        pinMode(physical, INPUT);
+    } else {
+        pinMode(physical, OUTPUT);
+        digitalWrite(physical, LOW);
+    }
+    return 0;
+}
+
+static int do_read(int bcm)
+{
+    int physical = bcm_to_physical(bcm);
+
+    if (bcm == 13) {
+        int fd = open("/sys/class/gpio/gpio357/value", O_RDONLY);
+        char c = '0';
+        if (fd < 0) {
+            return -1;
+        }
+        if (read(fd, &c, 1) != 1) {
+            close(fd);
+            return -1;
+        }
+        close(fd);
+        return c == '1' ? 1 : 0;
+    }
+    if (physical < 0) {
+        return -1;
+    }
+    return digitalRead(physical) ? 1 : 0;
+}
+
 static int set_servo(int bcm, int pulse_us)
 {
     int group;
     int channel;
-    int cur;
+    int cur_target;
 
     pulse_us = pulse_us < 0 ? 0 : pulse_us;
     pulse_us = pulse_us > 2500 ? 2500 : pulse_us;
@@ -678,20 +933,37 @@ static int set_servo(int bcm, int pulse_us)
         return hardware_enable(hw, SERVO_PERIOD_NS, (long)pulse_us * 1000L);
     }
 
-    /*
-     * BCM7 is the expected software-servo route. Other non-hardware servo
-     * pins also use this backend so a configuration error remains recoverable.
-     */
     soft_channel_t *ch = get_soft_channel(bcm, SOFT_SERVO);
     if (!ch) return -1;
     pthread_mutex_lock(&ch->lock);
-    cur = ch->value;
-    /* Always accept pulse=0 (release). Ignore tiny stick/noise updates. */
-    if (pulse_us != 0 && cur != 0 && abs(pulse_us - cur) < SERVO_HYST_US) {
+
+    /* While hold-locked, ignore noise; only a real move unlocks. */
+    if (ch->hold_locked && pulse_us != 0) {
+        if (abs(pulse_us - ch->hold_us) < servo_hold_break_us) {
+            pthread_mutex_unlock(&ch->lock);
+            return 0;
+        }
+        ch->hold_locked = false;
+        ch->settled_frames = 0;
+        ch->vel_us = 0;
+        fprintf(stderr, "servo hold break bcm=%d hold=%d -> %d\n",
+                bcm, ch->hold_us, pulse_us);
+    }
+
+    cur_target = ch->target;
+    /* Always accept pulse=0 (release). Ignore tiny stick/noise on the target. */
+    if (pulse_us != 0 && cur_target != 0 &&
+        abs(pulse_us - cur_target) < servo_hyst_us) {
         pthread_mutex_unlock(&ch->lock);
         return 0;
     }
-    ch->value = pulse_us;
+    ch->target = pulse_us;
+    ch->last_change_ns = mono_ns();
+    if (pulse_us == 0) {
+        ch->hold_locked = false;
+        ch->settled_frames = 0;
+        ch->vel_us = 0;
+    }
     pthread_mutex_unlock(&ch->lock);
     return 0;
 }
@@ -732,6 +1004,7 @@ int main(void)
 {
     char line[256];
     const char *hardware_env;
+    const char *env;
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -747,18 +1020,73 @@ int main(void)
     hardware_pwm_enabled =
         hardware_env != NULL && strcmp(hardware_env, "1") == 0;
 
+    env = getenv("VIGI_SERVO_HYST_US");
+    if (env && *env) {
+        servo_hyst_us = atoi(env);
+        if (servo_hyst_us < 0) {
+            servo_hyst_us = 0;
+        }
+    }
+    env = getenv("VIGI_SERVO_QUANTUM_US");
+    if (env && *env) {
+        servo_quantum_us = atoi(env);
+        if (servo_quantum_us < 1) {
+            servo_quantum_us = 1;
+        }
+    }
+    env = getenv("VIGI_SERVO_MAX_VEL_US");
+    if (env && *env) {
+        servo_max_vel_us = atoi(env);
+        if (servo_max_vel_us < 1) {
+            servo_max_vel_us = 1;
+        }
+    }
+    env = getenv("VIGI_SERVO_MAX_ACCEL_US");
+    if (env && *env) {
+        servo_max_accel_us = atoi(env);
+        if (servo_max_accel_us < 1) {
+            servo_max_accel_us = 1;
+        }
+    }
+    env = getenv("VIGI_SERVO_HOLD_BREAK_US");
+    if (env && *env) {
+        servo_hold_break_us = atoi(env);
+        if (servo_hold_break_us < 1) {
+            servo_hold_break_us = 1;
+        }
+    }
+    env = getenv("VIGI_SERVO_HOLD_FRAMES");
+    if (env && *env) {
+        servo_hold_frames = atoi(env);
+        if (servo_hold_frames < 1) {
+            servo_hold_frames = 1;
+        }
+    }
+    env = getenv("VIGI_SERVO_IDLE_DETACH_MS");
+    if (env && *env) {
+        servo_idle_detach_ms = atoi(env);
+        if (servo_idle_detach_ms < 0) {
+            servo_idle_detach_ms = 0;
+        }
+    }
+
     printf("rdk-gpio-helper ready backend=wiringpi-c hardware-pwm=%s "
-           "servo hyst=%d q=%d busy_us=%ld\n",
-           hardware_pwm_enabled ? "on" : "off", SERVO_HYST_US,
-           SERVO_QUANTUM_US, SERVO_BUSY_NS / 1000L);
+           "servo hyst=%d q=%d vel=%d accel=%d hold_break=%d hold_frames=%d "
+           "busy_us=%ld idle_detach_ms=%d\n",
+           hardware_pwm_enabled ? "on" : "off", servo_hyst_us,
+           servo_quantum_us, servo_max_vel_us, servo_max_accel_us,
+           servo_hold_break_us, servo_hold_frames,
+           SERVO_BUSY_NS / 1000L, servo_idle_detach_ms);
 
     while (!stopping && fgets(line, sizeof(line), stdin)) {
         char command[16];
-        int bcm;
-        int value;
+        char arg[16];
+        int bcm = 0;
+        int value = 0;
         int rc = -1;
+        int n;
 
-        if (sscanf(line, "%15s %d %d", command, &bcm, &value) < 1) {
+        if (sscanf(line, "%15s", command) != 1) {
             printf("err invalid\n");
             continue;
         }
@@ -766,7 +1094,43 @@ int main(void)
             printf("ok\n");
             continue;
         }
-        if (sscanf(line, "%15s %d %d", command, &bcm, &value) != 3) {
+
+        /* read <bcm> */
+        if (strcmp(command, "read") == 0) {
+            if (sscanf(line, "%15s %d", command, &bcm) != 2) {
+                printf("err invalid\n");
+                continue;
+            }
+            rc = do_read(bcm);
+            if (rc < 0) {
+                printf("err read bcm=%d errno=%d\n", bcm, errno);
+            } else {
+                printf("val %d\n", rc);
+            }
+            continue;
+        }
+
+        /* mode <bcm> in|out|0|1 */
+        if (strcmp(command, "mode") == 0) {
+            if (sscanf(line, "%15s %d %15s", command, &bcm, arg) != 3) {
+                printf("err invalid\n");
+                continue;
+            }
+            value = (strcmp(arg, "in") == 0 || strcmp(arg, "1") == 0 ||
+                     strcmp(arg, "input") == 0)
+                        ? 1
+                        : 0;
+            rc = set_mode(bcm, value);
+            if (rc == 0) {
+                printf("ok\n");
+            } else {
+                printf("err mode bcm=%d errno=%d\n", bcm, errno);
+            }
+            continue;
+        }
+
+        n = sscanf(line, "%15s %d %d", command, &bcm, &value);
+        if (n != 3) {
             printf("err invalid\n");
             continue;
         }
@@ -777,6 +1141,11 @@ int main(void)
             rc = set_pwm(bcm, value);
         } else if (strcmp(command, "servo") == 0) {
             rc = set_servo(bcm, value);
+        } else if (strcmp(command, "freq") == 0) {
+            rc = set_freq(bcm, value);
+        } else {
+            printf("err unknown %s\n", command);
+            continue;
         }
 
         if (rc == 0) {

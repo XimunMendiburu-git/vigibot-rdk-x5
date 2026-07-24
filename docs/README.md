@@ -8,7 +8,9 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 |----------|---------|
 | [poc-vigibot-rdk-x5.md](./poc-vigibot-rdk-x5.md) | Full POC report (summary, architecture, overview table) |
 | [video-encoding.md](./video-encoding.md) | H.264 encoding: hardware attempts, libx264 software solution |
+| [video-codecs-and-encoders-guide.md](./video-codecs-and-encoders-guide.md) | RDK X5 guide: codecs, Wave521 vs libx264, tools, pros/cons (English) |
 | [yolo-source.md](./yolo-source.md) | Second video source with YOLO overlay (BPU) |
+| [agricultural-detection-rdk-x5.md](./agricultural-detection-rdk-x5.md) | Agri pests/diseases: YOLOv8n/v11n, 2-stage pipeline, datasets, BPU deploy |
 | [pose-source.md](./pose-source.md) | Third video source with body keypoint overlay (C++ BPU) |
 | [gpio-mapping.md](./gpio-mapping.md) | GPIO, PWM, servos, mapping BCM→BOARD |
 | [known-issues.md](./known-issues.md) | Known issues, workarounds, and runbook |
@@ -52,7 +54,7 @@ Documentation for the proof of concept integrating an **RDK X5** robot (D-Roboti
 | Video source 2 (pose) | OK | Full C++ BPU + libx264 |
 | DC motors | OK | WiringPi C soft PWM at 250 Hz + ±15 dead zone |
 | Buzzer | OK | Soft PWM via bridge WiringPi C |
-| Servos | Mitigated | C soft PWM 50 Hz + hyst/quantize + busy-wait |
+| Servos | OK (soft PWM) | Accel + hold-lock; residual twitch is servo-model dependent |
 | IR illuminators | Under validation | WiringPi on BOARD21; kernel GPIO357 on BOARD33 |
 | Hardware H.264 encoder | Abandoned | Incompatible with browser decoder |
 | PCA9685 | Unavailable | No physical module on the robot |

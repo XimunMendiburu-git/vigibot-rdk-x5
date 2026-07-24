@@ -181,8 +181,15 @@ The source-switching procedure is **fragile** and needs to be productionized (pr
 
 ---
 
-## 8. Future Improvements
+## 8. Agricultural models (next step)
 
+The current binary uses a **stock COCO YOLOv5s** model. For pest / plant-disease work, prefer a fine-tuned **YOLOv8n or YOLOv11n** (optional 2-stage classifier). See [agricultural-detection-rdk-x5.md](./agricultural-detection-rdk-x5.md).
+
+---
+
+## 9. Future Improvements
+
+- Swap in agri-tuned YOLOv8n/v11n (and optional MobileNetV3/ResNet-18 stage 2)
 - Multithreaded pipeline: separate capture / inference / encoding queues
 - Align OpenExplorer versions (model compilation vs. HBRT runtime)
 - Reduce NV12↔BGR conversions (direct NV12 overlay if possible)

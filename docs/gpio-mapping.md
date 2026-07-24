@@ -55,19 +55,22 @@ flowchart LR
 
 | Command | Usage |
 |----------|-------|
-| `out <bcm> <0\|1>` | Digital write |
+| `out <bcm> <0\|1>` | Digital write (drives output) |
+| `mode <bcm> in\|out` | Floating / input vs output (`SLEEPMODES: Floating`) |
+| `read <bcm>` | Digital read → reply `val 0` / `val 1` |
 | `pwm <bcm> <0-255>` | Motor/buzzer PWM (soft PWM) |
+| `freq <bcm> <hz>` | Soft-PWM frequency (`pwmFrequency` / `PWMFREQUENCY`) |
 | `servo <bcm> <pulse_us>` | Servo 500–2500 µs (soft PWM 50 Hz) |
 
 ### Files
 
 | File | Role |
 |---------|------|
-| `rdk-pigpio.js` | pigpio-like API, spawns the helper, `digitalWrite`, `pwmWrite`, `servoWrite` |
+| `rdk-pigpio.js` | pigpio-like API, spawns the helper, `digitalWrite`, `digitalRead`, `pwmWrite`, `pwmFrequency`, `servoWrite`, `mode` |
 | `rdk-gpio-helper.c` | WiringPi daemon, BCM→BOARD translation, real-time soft PWM |
 | `rdk-gpio-helper.py` | Legacy Hobot.GPIO backend, automatic fallback if the binary is missing |
 
-Node calls `setServos` → `servoWrite(pwm_µs)` when `ADRESSE == -1` (no PCA). Similarly, `setPwmPwm` → `pwmWrite` for the motors.
+Node calls `setServos` → `servoWrite(pwm_µs)` when `ADRESSE == -1` (no PCA). Similarly, `setPwmPwm` → `pwmWrite` for the motors. `setSleepModes` → `Floating` uses `mode(INPUT)`.
 
 ---
 
@@ -112,24 +115,19 @@ Hardware validation: blink test with `simple_out.py` on BOARD **37** → rear-ri
 
 Driven through `pwmWrite` → soft PWM. Validated.
 
-### Servos (`Servos`, pulses 500–2500 µs) — UNDER VALIDATION
+### Servos (`Servos`, pulses 500–2500 µs) — OK with soft-PWM limits
 
-| Attempt | Result |
-|-----------|----------|
-| 50 Hz soft PWM + `time.sleep` | Significant jitter |
-| Busy-wait with `perf_counter` during HIGH pulse | Reduced |
-| 15–40 µs hysteresis + 20 µs quantization | Reduced |
-| One `servo-engine` thread for all servos | Reduced |
-| `renice -10` on helper | Marginal |
-| WiringPi C helper + `SCHED_FIFO` | Deployed; clear improvement observed |
-| Single servo thread + phase-shifted pulses | Deployed to reduce jitter and simultaneous current draw |
+Software path (shared C helper): rising-edge pulse timing, accel/slew, hold-lock
+after settle. Residual twitch depends strongly on **servo model**.
 
-The C helper uses an absolute monotonic clock and a single real-time thread.
-Servo pulses are emitted sequentially within each 20 ms frame (spread current
-draw). Each high phase is busy-waited for accurate width under video/BPU load;
-consigne updates are quantized (40 µs) with 80 µs hysteresis. Node also skips
-identical consecutive `servoWrite` values. BCM7/BOARD26 uses the same soft PWM
-engine.
+| Finding | Detail |
+|---------|--------|
+| Swap test | Head ↔ gripper wiring swapped → artefacts follow the **head servos**, not the BCM pins |
+| Conclusion | Soft PWM is good enough for gripper servos; head units are more sensitive to the same signal |
+| Mitigations kept | Accel max 2 µs/frame², hold-break 200 µs, `BACKSLASH=0` recommended |
+| Not pursued further | Extra software filters (per-servo threads, aggressive hold) made behaviour worse |
+
+Long-term options for sensitive head servos: PCA9685, quieter servo models, or dedicated servo supply. See [known-issues.md](./known-issues.md) §5.
 
 ### IR (`Gpios`) — bridge validated
 
@@ -142,9 +140,24 @@ This workaround does not affect any motor or servo GPIO.
 Vigibot `COMMANDS1` buttons 0 and 1 control the left and right
 illuminators, respectively.
 
-### Switches (`Gpios`) — Not validated
+### Helper feature parity (pigpio-like)
 
-Switch outputs 4–7 still need explicit testing.
+| API | Status |
+|-----|--------|
+| `digitalWrite` / `out` | OK |
+| `pwmWrite` / `pwm` | OK (default ~250 Hz soft) |
+| `pwmFrequency` / `freq` | OK (per-pin soft period) |
+| `servoWrite` / `servo` | OK |
+| `mode(INPUT)` / Floating sleep | OK (`mode in`) |
+| `digitalRead` / `read` | OK (async-updated cache; first call may be stale one tick) |
+
+### Interrupteurs (BCM 16–23 on Pi configs)
+
+On classic Vigibot Pi wiring these pins are **reserved** for switch-related I/O.
+On this RDK robot they were listed as “Switch outputs 4–7” pending validation:
+
+- If configured as **Gpios outputs** (COMMANDS1 → on/off): same path as IR LEDs — exercise each pin once.
+- If used as **inputs** (limit switches): `digitalRead` after `mode in` / Floating; confirm pull-up/down hardware.
 
 ---
 
